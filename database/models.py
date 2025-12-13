@@ -1,27 +1,8 @@
 from sqlalchemy import String, BigInteger, Boolean, DateTime, Time
 from sqlalchemy.orm import Mapped, mapped_column, DeclarativeBase
-from sqlalchemy.ext.asyncio import AsyncAttrs, async_sessionmaker, create_async_engine, AsyncSession
-from datetime import datetime, time, timezone
-
-
-DB_PATH = 'database/data_users.db'
-
-# Создаем асинхронный движок
-engine = create_async_engine(url=f'sqlite+aiosqlite:///{DB_PATH}')
-
-# Настраиваем асинхронную сессию
-async_session = async_sessionmaker(engine, class_=AsyncSession)
-
-
-# Возвращает текущее время в UTC без микросекунд
-def current_time():
-    return datetime.now(timezone.utc).replace(microsecond=0)
-
-
-# Асинхронная функция для создания таблиц
-async def async_main():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+from sqlalchemy.ext.asyncio import AsyncAttrs
+from datetime import datetime, time
+from func.func_bot import current_time
 
 
 # Базовый класс для моделей

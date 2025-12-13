@@ -13,8 +13,6 @@
 """
 
 import os
-from datetime import date
-
 from aiogram import Router, types, F
 from config import bot
 from aiogram.filters.command import Command
@@ -22,9 +20,8 @@ from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from keybords import keybords as kb
-from database.requests import (user_has_access, add_user, add_comment, add_grade, all_orders_by_user,
-                               count_and_name_gen, delete_order, get_user_dict, update_user, can_mess_true,
-                               get_occupied_hours)
+from database.requests import (get_user_role, add_user, add_comment, add_grade, all_orders_by_user,
+                               count_and_name_gen, delete_order, get_user_dict, update_user, can_mess_true)
 from func.func_bot import get_greeting
 import re
 
@@ -32,7 +29,6 @@ import re
 router = Router()
 
 admin = os.getenv('ADMIN_ID')
-
 phone_pattern = re.compile(r'^7\d{10}$')
 
 
@@ -58,10 +54,6 @@ class Edit(StatesGroup):
 class Mess(StatesGroup):
     """Состояния для отправки сообщения в поддержку и последующего взаимодействия."""
     mess_step = State()
-    mess_step2 = State()
-    mess_step3 = State()
-    mess_step4 = State()
-    mess_step5 = State()
 
 
 class Repair(StatesGroup):
@@ -85,30 +77,47 @@ async def cmd_start(message: types.Message) -> None:
     """
     Обрабатывает команду /start.
 
-    Если пользователь авторизован — приветствует и показывает основное меню.
-    Иначе — предлагает пройти авторизацию.
+    В зависимости от роли пользователя показывает разные клавиатуры:
+    - user → обычное меню
+    - master → меню мастера
+    - admin → админ-панель
+    Если пользователь не авторизован — просит пройти авторизацию.
     """
     user_id = message.from_user.id
     name = message.chat.first_name
     photo = FSInputFile("img/titul_photo.jpg")
 
-    if await user_has_access(user_id):
-        greeting = await get_greeting()
-        await message.answer_photo(
-            photo=photo,
-            caption=(
-                f"<b>{greeting} {name}</b>\n\n"
-                "Теперь вам доступен данный сервис.\n"
-                "Для удобства пользуйтесь кнопками ниже ⬇️"
-            ),
-            reply_markup=kb.send_text()
-        )
-    else:
+    role = await get_user_role(user_id)
+
+    # Если пользователь не найден в БД
+    if role is None:
         await message.answer(
             f"{name} <b>Пожалуйста, пройдите быструю АВТОРИЗАЦИЮ.</b>\n"
             "Это обязательная процедура для использования сервиса!",
             reply_markup=kb.keyboard
         )
+        return
+
+    # Выбираем клавиатуру в зависимости от роли
+    if role == "admin":
+        reply_markup = kb.admin_menu()  # админская клавиатура
+    elif role == "master":
+        reply_markup = kb.master_menu()  # клавиатура для мастера
+    elif role == "user":
+        reply_markup = kb.user_menu()
+    else:
+        # Если в БД оказалась неизвестная роль
+        reply_markup = kb.keyboard
+
+    greeting = await get_greeting()
+    await message.answer_photo(
+        photo=photo,
+        caption=(
+            f"<b>{greeting} {name}</b>\n\n"
+            "Для удобства пользуйтесь кнопками ниже ⬇️"
+        ),
+        reply_markup=reply_markup
+    )
 
 
 @router.callback_query(F.data == "authorization")
@@ -116,7 +125,7 @@ async def reg_one(call: CallbackQuery, state: FSMContext) -> None:
     """Начинает процесс регистрации при нажатии кнопки 'Авторизация'."""
     user_id = call.from_user.id
 
-    if await user_has_access(user_id):
+    if await get_user_role(user_id):
         await call.answer("Вы уже авторизированы", show_alert=True)
         return
 
@@ -182,18 +191,19 @@ async def confirm_registration(call: CallbackQuery, state: FSMContext) -> None:
     await call.message.edit_reply_markup(reply_markup=None)
     await call.message.answer(
         "Поздравляем, вы авторизированы! Теперь вы можете пользоваться данным сервисом.",
-        reply_markup=kb.send_text()
+        reply_markup=kb.user_menu()
     )
 
     data = await state.get_data()
     new_user = {
         "tg_id": data.get("user_id"),
         "user_name": data.get("user_name"),
-        "status": "user",  # фиксированное значение по умолчанию
+        "status": "Клиент",
         "rating": 1,
         "contact": data.get("tel"),
-        "brand_auto": data.get("brand_auto"),
+        "brand_auto": data.get("brand_auto")
     }
+
     await add_user(new_user)
     await state.clear()
 
@@ -210,7 +220,7 @@ async def cancel_registration(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # ==============================
-# ЛИЧНЫЙ КАБИНЕТ
+# ЛИЧНЫЙ КАБИНЕТ ПОЛЬЗОВАТЕЛЯ
 # ==============================
 
 @router.callback_query(F.data == "account")
@@ -310,7 +320,7 @@ async def initiate_support_message(call: CallbackQuery, state: FSMContext) -> No
 @router.message(Mess.mess_step)
 async def forward_support_message(message: Message, state: FSMContext) -> None:
     """
-    Формирует и пересылает сообщение от пользователя администраторам,
+    Формирует и пересылает сообщение от пользователя администраторам и мастерам,
     которые могут получать уведомления (`can_mess_true`).
     """
     user_id = message.chat.id
@@ -319,6 +329,12 @@ async def forward_support_message(message: Message, state: FSMContext) -> None:
     user_data = await get_user_dict(
         user_id, ("user_name", "rating", "brand_auto", "year_auto", "contact")
     )
+
+    if not user_data:
+        await message.answer("❌ Произошла ошибка. Попробуйте позже.")
+        await state.clear()
+        return
+
     user_name, rating, brand_auto, year_auto, contact = user_data
 
     formatted_message = (
@@ -338,105 +354,10 @@ async def forward_support_message(message: Message, state: FSMContext) -> None:
         await bot.send_message(
             chat_id=admin_id,
             text=formatted_message,
-            reply_markup=kb.mess_menu([1, 2, 3, 4, 5])
+            reply_markup=kb.mess_menu([1, 2, 3, 4, 5], user_id=user_id)
         )
 
     await message.answer("Ваше сообщение отправлено! Ожидайте ответа...")
-    await state.set_state(Mess.mess_step2)
-
-
-@router.callback_query(Mess.mess_step2, F.data == "replay_mess")
-async def custom_reply_to_user(call: CallbackQuery, state: FSMContext) -> None:
-    """Позволяет администратору ввести персональный ответ пользователю."""
-    await call.message.answer("Введите сообщение и отправьте!")
-    await state.set_state(Mess.mess_step3)
-
-
-@router.callback_query(Mess.mess_step2, F.data.startswith("mess"))
-async def process_support_action(call: CallbackQuery, state: FSMContext) -> None:
-    """
-    Обрабатывает быстрые действия поддержки:
-    — ожидание, отказ, звонок, назначение времени.
-    """
-    action = call.data.split(":")[1]
-    data = await state.get_data()
-    greeting = await get_greeting()
-    user_id = data["tg_id"]
-    user_name = data["user_name"]
-
-    responses = {
-        "await": f"{greeting} {user_name}!\n\nВ данный момент занят. Отвечу, как только освобожусь!",
-        "refuse": f"{greeting} {user_name}!\n\nК сожалению, не сможем помочь с этой проблемой.",
-        "call": f"{greeting} {user_name}!\n\nЗвоните по номеру: +79999999999",
-    }
-
-    if action in responses:
-        await bot.send_message(chat_id=user_id, text=responses[action])
-        await call.message.answer("Ответ отправлен пользователю.")
-    elif action == "time":
-        await call.message.answer(
-            "Выберите вариант записи:",
-            reply_markup=kb.mess_menu([6, 7])
-        )
-        await state.set_state(Mess.mess_step4)
-
-
-@router.callback_query(Mess.mess_step4, F.data.startswith("time"))
-async def select_appointment_day(call: CallbackQuery, state: FSMContext) -> None:
-    """
-    Назначает день записи: сегодня или через календарь.
-    """
-    option = call.data.split(":")[1]
-    data = await state.get_data()
-    user_id = data["tg_id"]
-
-    if option == "today":
-        today = date.today()
-        occupied = await get_occupied_hours(today)
-        await call.message.answer(
-            "На какое время записать?", reply_markup=kb.generate_time_buttons(occupied)
-        )
-    elif option == "next_days":
-        today = date.today()
-        await call.message.answer(
-            f"Сегодня {today}", reply_markup=kb.generate_calendar_buttons()
-        )
-        await state.set_state(Mess.mess_step5)
-
-
-@router.callback_query(Mess.mess_step5, F.data.startswith("day"))
-async def select_appointment_time(call: CallbackQuery, state: FSMContext) -> None:
-    """
-    Выбирает конкретный день из календаря и предлагает свободные часы.
-    """
-    day_str = call.data.split(":")[1]
-    today = date.today()
-    try:
-        selected_date = today.replace(day=int(day_str))
-    except ValueError:
-        await call.answer("Недопустимая дата", show_alert=True)
-        return
-
-    occupied = await get_occupied_hours(selected_date)
-    await call.message.answer(
-        "На какое время записать?", reply_markup=kb.generate_time_buttons(occupied)
-    )
-    # Логика выбора времени должна быть реализована отдельным handler'ом
-
-
-@router.message(Mess.mess_step3)
-async def send_custom_reply(message: Message, state: FSMContext) -> None:
-    """Отправляет персональный ответ от администратора пользователю."""
-    greeting = await get_greeting()
-    data = await state.get_data()
-    user_id = data["tg_id"]
-    custom_text = message.text
-    user_name = data["user_name"]
-
-    await bot.send_message(
-        chat_id=user_id, text=f"{greeting} {user_name}\n\n{custom_text}"
-    )
-    await message.answer("Сообщение отправлено.")
     await state.clear()
 
 
@@ -485,7 +406,7 @@ async def show_contacts(call: CallbackQuery) -> None:
     caption = (
         "🏢 <b>СТО ЗАО Рассвет:</b> г. Томск, ул. 1-я Казахстанская, 81\n\n"
         "📞 <b>Телефон:</b> +79999999999\n\n"
-        "📧 <b>Email:</b> sto_omsk55@mail.ru"
+        "📧 <b>Email:</b> sto@mail.ru"
     )
     await call.message.answer_photo(photo=photo, caption=caption, reply_markup=kb.keyboard5)
 
