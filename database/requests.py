@@ -1,7 +1,7 @@
-import os
-from database.models import User, Comments, Orders, Appointment, async_session
+from database.models import User, Comments, Orders, Appointment
+from database.engine import async_session
 from sqlalchemy import update, select, delete
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, time
 
 
 def connection(func):
@@ -19,46 +19,12 @@ async def set_user(session, tg_id):
         await session.commit()
 
 
-# Создаёт администратора при запуске, если его ещё нет в БД. Берёт tg_id из переменной окружения ADMIN_ID.
-async def init_admin_user():
-    admin_id_str = os.getenv("ADMIN_ID")
-    if not admin_id_str:
-        return
-
-    try:
-        admin_tg_id = int(admin_id_str)
-    except ValueError:
-        return
-
+# Асинхронная функция для получения роли пользователя по tg_id.
+# Возвращает строку роли ("user", "master", "admin") или None, если пользователя нет.
+async def get_user_role(user_id: int) -> str | None:
     async with async_session() as session:
-        # Проверяем, существует ли пользователь с таким tg_id
-        existing = await session.execute(
-            select(User).where(User.tg_id == admin_tg_id)
-        )
-
-        if existing.scalar_one_or_none():
-            return
-
-        # Создаём админа
-        new_admin = User(
-            tg_id=admin_tg_id,
-            user_name="Администратор",
-            role="admin",
-            can_messages=True,
-            rating=0,
-            contact="-",
-            brand_auto="-"
-        )
-        session.add(new_admin)
-        await session.commit()
-        print(f"Администратор с tg_id={admin_tg_id} успешно создан!")
-
-
-# Асинхронная функция для проверки id пользователя в бд.
-async def user_has_access(user_id: int) -> bool:
-    async with async_session() as session:
-        result = await session.execute(select(User).where(User.tg_id == user_id))
-        return result.scalar() is not None
+        result = await session.execute(select(User.role).where(User.tg_id == user_id))
+        return result.scalar()  # None, если не найден
 
 
 # Асинхронная функция добавления нового пользователя в бд.
@@ -244,18 +210,24 @@ async def get_occupied_hours(target_date: date):
         return sorted(DEFAULT_HOURS - occupied_hours)
 
 
-async def create_test_appointment():
-    async with async_session() as session:
-        now = datetime.now()
-        appointment_date = now
-        appointment_time = now.time()
-        end_time = (datetime.combine(now.date(), now.time()) + timedelta(minutes=30)).time()
+async def create_appointment(user_id: int, date_val: date, hour: int):
+    """
+    Создаёт запись на приём.
+    - user_id: tg_id пользователя
+    - date_val: дата (datetime.date)
+    - hour: час начала (например, 9)
+    """
+    start_time = time(hour=hour, minute=0)
+    end_time = time(hour=hour + 1, minute=0)  # +1 час
 
+    # Преобразуем date + time → datetime
+    appointment_datetime = datetime.combine(date_val, start_time)
+
+    async with async_session() as session:
         new_appointment = Appointment(
-            appointment_date=appointment_date,
-            appointment_time=appointment_time,
+            appointment_date=appointment_datetime,
+            appointment_time=start_time,
             end_time=end_time
         )
-
         session.add(new_appointment)
         await session.commit()
