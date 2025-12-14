@@ -40,34 +40,13 @@ def generate_buttons(count: int, labels: list):
     return keyboard8
 
 
-DEFAULT_HOURS = set(range(8, 24))
-
-
-def generate_time_buttons(hours_set: set, user_id: int):
-    sorted_hours = sorted(hours_set)
-    rows = []
-    current_row = []
-
-    for hour in sorted_hours:
-        label = f"{hour}:00"
-        # В callback_data добавляем час И user_id
-        button = InlineKeyboardButton(
-            text=label,
-            callback_data=f"appoint:{hour}:{user_id}"
-        )
-        current_row.append(button)
-
-        if len(current_row) == 3:
-            rows.append(current_row)
-            current_row = []
-
-    if current_row:
-        rows.append(current_row)
-
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
 def generate_calendar_buttons(user_id: int):
+    """
+    Функция генерирует клавиатуру с кнопками в виде календаря.
+
+    param: user_id: int
+    return: InlineKeyboardMarkup
+    """
     today = date.today()
     year = today.year
     month = today.month
@@ -115,6 +94,36 @@ def generate_calendar_buttons(user_id: int):
                 current_row.append(InlineKeyboardButton(text="✖️", callback_data="ignore"))
             rows.append(current_row)
             current_row = []
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def generate_time_buttons(hours_set: set, user_id: int):
+    """
+    Функция генерирует клавиатуру с кнопками, свободное время для записи.
+
+    param: hours_set: set, user_id: int
+    return: InlineKeyboardMarkup
+    """
+    sorted_hours = sorted(hours_set)
+    rows = []
+    current_row = []
+
+    for hour in sorted_hours:
+        label = f"{hour}:00"
+        # В callback_data добавляем час И user_id
+        button = InlineKeyboardButton(
+            text=label,
+            callback_data=f"appoint:{hour}:{user_id}"
+        )
+        current_row.append(button)
+
+        if len(current_row) == 3:
+            rows.append(current_row)
+            current_row = []
+
+    if current_row:
+        rows.append(current_row)
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

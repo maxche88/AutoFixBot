@@ -1,10 +1,25 @@
+"""
+Модуль работы с базой данных: CRUD-операции и бизнес-логика.
+
+Использует асинхронный движок SQLAlchemy.
+Все функции асинхронные и работают через session-обёртку.
+"""
+
 from database.models import User, Comments, Orders, Appointment
 from database.engine import async_session
 from sqlalchemy import update, select, delete
 from datetime import datetime, timedelta, date, time
+from typing import Optional, Union, Tuple, List, Dict, Any
+from config import DEFAULT_HOURS
 
 
 def connection(func):
+    """
+    Декоратор для автоматического управления сессией базы данных.
+
+    Оборачивает функцию, открывает асинхронную сессию,
+    передаёт её первым аргументом и автоматически закрывает после выполнения.
+    """
     async def wrapper(*args, **kwargs):
         async with async_session() as session:
             return await func(session, *args, **kwargs)
@@ -12,62 +27,84 @@ def connection(func):
 
 
 @connection
-async def set_user(session, tg_id):
-    user = await session.scalar(select(User).where(User.tg_id == tg_id))
-    if not user:
+async def set_user(session, tg_id: int) -> None:
+    """
+    Создаёт минимальную запись пользователя, если он ещё не существует.
+    Используется при первом взаимодействии с ботом, до полной регистрации.
+    """
+    existing_user = await session.scalar(select(User).where(User.tg_id == tg_id))
+    if not existing_user:
         session.add(User(tg_id=tg_id))
         await session.commit()
 
 
-# Асинхронная функция для получения роли пользователя по tg_id.
-# Возвращает строку роли ("user", "master", "admin") или None, если пользователя нет.
-async def get_user_role(user_id: int) -> str | None:
+async def get_user_role(user_id: int) -> Optional[str]:
+    """
+    Возвращает роль пользователя по его Telegram ID.
+
+    :param user_id: Telegram ID пользователя.
+    :return: Строка роли ('user', 'master', 'admin') или None, если пользователь не найден.
+    """
     async with async_session() as session:
         result = await session.execute(select(User.role).where(User.tg_id == user_id))
-        return result.scalar()  # None, если не найден
+        return result.scalar()
 
 
-# Асинхронная функция добавления нового пользователя в бд.
-async def add_user(data: dict):
+async def add_user(data: Dict[str, Any]) -> None:
+    """
+    Добавляет нового пользователя в базу данных.
+
+    :param data: Словарь с полями модели User (например, tg_id, user_name, contact и т.д.).
+    """
     async with async_session() as session:
         user_obj = User(**data)
         session.add(user_obj)
         await session.commit()
 
 
-# Асинхронная функция добавления комментария и данных об отправителе.
-async def add_comment(data: dict):
+async def add_comment(data: Dict[str, Any]) -> None:
+    """
+    Добавляет отзыв (комментарий) от пользователя.
+
+    :param data: Словарь с полями модели Comments (tg_id, user_name, text).
+    """
     async with async_session() as session:
         comment_obj = Comments(**data)
         session.add(comment_obj)
         await session.commit()
 
 
-# Функция добавляет оценку пользователю со статусом master.
-async def add_grade(user_id: int, rate: int):
+async def add_grade(user_id: int, rate: int) -> None:
+    """
+    Увеличивает рейтинг пользователя (мастера) на указанное значение.
+
+    :param user_id: Telegram ID мастера.
+    :param rate: Число, на которое увеличивается рейтинг (обычно 1–5).
+    """
     async with async_session() as session:
-        stmt = (update(User).where(User.tg_id == user_id).values(rating=User.rating + rate))
+        stmt = update(User).where(User.tg_id == user_id).values(rating=User.rating + rate)
         await session.execute(stmt)
         await session.commit()
 
 
-# Достаём данные из Orders по соответствующему id
-async def all_orders_by_user(tg_id_user: int):
+async def all_orders_by_user(tg_id_user: int) -> List[Dict[str, Any]]:
+    """
+    Возвращает список активных заказов пользователя.
+
+    :param tg_id_user: Telegram ID клиента.
+    :return: Список словарей с полями: id, tg_id_master, master_name, repair_status, complied.
+    """
     async with async_session() as session:
-        stmt = (
-            select(
-                Orders.id,
-                Orders.tg_id_master,
-                Orders.master_name,
-                Orders.repair_status,
-                Orders.complied
-            ).where(Orders.tg_id_user == tg_id_user)
-        )
+        stmt = select(
+            Orders.id,
+            Orders.tg_id_master,
+            Orders.master_name,
+            Orders.repair_status,
+            Orders.complied
+        ).where(Orders.tg_id_user == tg_id_user)
 
         result = await session.execute(stmt)
-
-        # Форматируем результат в виде списка словарей
-        rows = [
+        return [
             {
                 "id": row.id,
                 "tg_id_master": row.tg_id_master,
@@ -78,40 +115,54 @@ async def all_orders_by_user(tg_id_user: int):
             for row in result.all()
         ]
 
-        return rows
 
-
-# Достаём данные по соответствующему tg_id
-async def load_order(tg_id_user: int):
+async def load_order(tg_id_user: int) -> Optional[Orders]:
+    """
+    Возвращает первый (единственный актуальный) заказ пользователя.
+    Предполагается, что у пользователя одновременно может быть только один активный заказ.
+    """
     async with async_session() as session:
         stmt = select(Orders).where(Orders.tg_id_user == tg_id_user)
         result = await session.execute(stmt)
-        order = result.scalars().first()
-        return order
+        return result.scalars().first()
 
 
-async def count_and_name_gen(lst: list) -> int and list:
-    count_b = len(lst)
-    res_lst_name_id = []
-    for i in lst:
-        item_name = i.get('master_name')
-        tg_id = i.get('tg_id_master')
-        master_id = i.get('id')
-        res_lst_name_id.append((item_name, tg_id, master_id))
-    return count_b, res_lst_name_id
+async def count_and_name_gen(orders_list: List[Dict[str, Any]]) -> Tuple[int, List[Tuple[str, int, int]]]:
+    """
+    Преобразует список заказов в данные для генерации кнопок с именами мастеров.
+
+    :param orders_list: Список заказов, возвращённый из all_orders_by_user.
+    :return: Кортеж: (количество, список кортежей (имя_мастера, tg_id_мастера, id_заказа)).
+    """
+    count = len(orders_list)
+    master_data = [
+        (order["master_name"], order["tg_id_master"], order["id"])
+        for order in orders_list
+    ]
+    return count, master_data
 
 
-# Удаление ORDER по переданному ID.
-async def delete_order(order_id: int):
+async def delete_order(order_id: int) -> None:
+    """
+    Удаляет заказ по его идентификатору.
+    Используется при закрытии заказа клиентом (после оценки).
+    """
     async with async_session() as session:
         stmt = delete(Orders).where(Orders.id == order_id)
         await session.execute(stmt)
         await session.commit()
 
 
-# Функция принимает параметр tg_id и если второго нет параметра то возвращает словарь с всеми
-# ключами. Если указать второй параметр в виде кортежа со строками полей, то функция вернёт значения этих полей.
-async def get_user_dict(tg_id: int, fields: tuple = None):
+async def get_user_dict(tg_id: int, fields: Optional[Tuple[str, ...]] = None) -> Union[Dict[str, Any], Tuple, None]:
+    """
+    Возвращает данные пользователя по его Telegram ID.
+
+    :param tg_id: Telegram ID пользователя.
+    :param fields: Необязательный кортеж имён полей (например, ('user_name', 'contact')).
+                   Если указан — возвращает кортеж значений в том же порядке.
+                   Если не указан — возвращает полный словарь данных.
+    :return: Словарь всех полей, кортеж значений или None, если пользователь не найден.
+    """
     async with async_session() as session:
         stmt = select(User).where(User.tg_id == tg_id)
         result = await session.execute(stmt)
@@ -120,7 +171,6 @@ async def get_user_dict(tg_id: int, fields: tuple = None):
         if not user:
             return None
 
-        # Формируем словарь с данными пользователя
         user_dict = {
             "id": user.id,
             "tg_id": user.tg_id,
@@ -134,45 +184,50 @@ async def get_user_dict(tg_id: int, fields: tuple = None):
             "date": user.date.isoformat(),
         }
 
-        # Если передали кортеж полей, выбираем конкретные значения
-        if isinstance(fields, tuple):
-            values = []
-            for field in fields:
-                value = user_dict.get(field)
-                values.append(value)
-            return tuple(values)
-        else:
-            # Если поля не указаны, возвращаем полный словарь
-            return user_dict
+        if fields:
+            return tuple(user_dict.get(field) for field in fields)
+        return user_dict
 
 
-async def update_user(tg_id: int, column: str, value):
+async def update_user(tg_id: int, column: str, value: Any) -> bool:
+    """
+    Обновляет одно поле пользователя по его Telegram ID.
+
+    :param tg_id: Telegram ID пользователя.
+    :param column: Имя колонки модели User (например, 'contact', 'brand_auto').
+    :param value: Новое значение.
+    :return: True при успехе, None если колонка не существует.
+    """
+    if not hasattr(User, column):
+        return False
+
     async with async_session() as session:
-        if not hasattr(User, column):
-            return None
-
-        stmt = (
-            update(User).where(User.tg_id == tg_id)
-            .values({getattr(User, column): value})
-        )
-
+        stmt = update(User).where(User.tg_id == tg_id).values({column: value})
         await session.execute(stmt)
         await session.commit()
         return True
 
 
-# Функция ищет в таблице User пользователей с can_messages True и выдаёт tg_id этого пользователя.
-async def can_mess_true() -> list[int]:
+async def can_mess_true() -> List[int]:
+    """
+    Возвращает список Telegram ID пользователей, которым разрешено получать уведомления.
+    Используется для рассылки сообщений от клиентов (мастерам/админам).
+    """
     async with async_session() as session:
-        stmt = select(User.tg_id).where(User.can_messages)
+        stmt = select(User.tg_id).where(User.can_messages.is_(True))
         result = await session.execute(stmt)
         return result.scalars().all()
 
 
-DEFAULT_HOURS = set(range(8, 24))
+async def get_occupied_hours(target_date: date) -> List[int]:
+    """
+    Возвращает список свободных часов на указанную дату.
+    Анализирует все записи в таблице Appointment и исключает занятые часы.
+    Каждая запись может занимать более одного часа (например, с 9:00 до 11:00 → заняты 9 и 10).
 
-
-async def get_occupied_hours(target_date: date):
+    :param target_date: Дата (datetime.date).
+    :return: Список свободных часов (например, [9, 10, 14, 15]).
+    """
     async with async_session() as session:
         start_of_day = datetime.combine(target_date, datetime.min.time())
         end_of_day = datetime.combine(target_date, datetime.max.time())
@@ -186,41 +241,40 @@ async def get_occupied_hours(target_date: date):
         occupied_hours = set()
 
         for appt in appointments:
-            start_time = appt.appointment_time  # Время записи
-            duration_time = appt.end_time       # Длительность
-
-            if not start_time or not duration_time:
+            if not appt.appointment_time or not appt.end_time:
                 continue
 
-            # Преобразуем начало приёма в datetime
-            start_dt = datetime.combine(target_date, start_time)
+            # Начало и длительность записи
+            start_dt = datetime.combine(target_date, appt.appointment_time)
+            # Обрабатываем end_time как длительность
+            end_dt = datetime.combine(target_date, appt.end_time)
 
-            # Преобразуем длительность в timedelta
-            duration = timedelta(hours=duration_time.hour, minutes=duration_time.minute)
+            # Если запись переходит на следующий день — ограничиваем текущим днём
+            if end_dt.date() > target_date:
+                end_dt = datetime.combine(target_date, time(23, 59))
 
-            # Вычисляем конец приёма
-            end_dt = start_dt + duration
-
-            # Проходим по каждому часу от начала до конца
+            # Помечаем все часы от начала до конца как занятые
             current = start_dt
             while current < end_dt:
                 occupied_hours.add(current.hour)
                 current += timedelta(hours=1)
 
-        return sorted(DEFAULT_HOURS - occupied_hours)
+        free_hours = sorted(DEFAULT_HOURS - occupied_hours)
+        return free_hours
 
 
-async def create_appointment(user_id: int, date_val: date, hour: int):
+async def create_appointment(user_id: int, date_val: date, hour: int) -> None:
     """
-    Создаёт запись на приём.
-    - user_id: tg_id пользователя
-    - date_val: дата (datetime.date)
-    - hour: час начала (например, 9)
+    Создаёт новую запись на приём.
+    Запись длится 1 час: с `hour:00` до `(hour+1):00`.
+
+    :param user_id: Telegram ID пользователя (в текущей реализации не используется, но зарезервировано).
+    :param date_val: Дата приёма (datetime.date).
+    :param hour: Час начала (например, 9 → запись с 9:00 до 10:00).
     """
     start_time = time(hour=hour, minute=0)
-    end_time = time(hour=hour + 1, minute=0)  # +1 час
+    end_time = time(hour=min(hour + 1, 23), minute=0)  # Ограничение: не позже 23:00
 
-    # Преобразуем date + time → datetime
     appointment_datetime = datetime.combine(date_val, start_time)
 
     async with async_session() as session:

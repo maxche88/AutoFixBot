@@ -20,7 +20,6 @@ logging.basicConfig(filename='logs/bot.log',
                     encoding='utf-8'
                     )
 
-
 dp = Dispatcher()
 
 dp.include_router(common_router)

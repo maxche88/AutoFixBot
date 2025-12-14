@@ -350,6 +350,7 @@ async def forward_support_message(message: Message, state: FSMContext) -> None:
     admin_ids = await can_mess_true()
     await state.update_data(tg_id=user_id, user_name=user_name)
 
+    # Отправляет всем администраторам и мастерам у которых can_messages=True
     for admin_id in admin_ids:
         await bot.send_message(
             chat_id=admin_id,
