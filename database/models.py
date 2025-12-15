@@ -67,6 +67,7 @@ class Appointment(Base):
     __tablename__ = 'appointments'
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tg_id_user: Mapped[int] = mapped_column(BigInteger, comment="Telegram ID клиента")
     appointment_date: Mapped[datetime] = mapped_column(DateTime, comment="Дата записи")
     appointment_time: Mapped[time] = mapped_column(Time, comment="Начало временного слота")
     end_time: Mapped[time] = mapped_column(Time, comment="Окончание временного слота")

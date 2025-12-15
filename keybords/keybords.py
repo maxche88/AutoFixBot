@@ -40,38 +40,70 @@ def generate_buttons(count: int, labels: list):
     return keyboard8
 
 
-def generate_calendar_buttons(user_id: int):
+def generate_calendar_buttons(user_id: int, year: int, month: int, busy_days: set = None):
     """
-    Функция генерирует клавиатуру с кнопками в виде календаря.
+    Генерирует календарь для указанного года и месяца.
 
-    param: user_id: int
-    return: InlineKeyboardMarkup
+    :param user_id: ID пользователя
+    :param year: год (например, 2025)
+    :param month: месяц (1–12)
+    :param busy_days: множество дней без свободного времени
     """
+    if busy_days is None:
+        busy_days = set()
+
     today = date.today()
-    year = today.year
-    month = today.month
 
+    # Определяем следующий и предыдущий месяц
     if month == 12:
-        next_month = 1
-        next_year = year + 1
+        next_month, next_year = 1, year + 1
     else:
-        next_month = month + 1
-        next_year = year
+        next_month, next_year = month + 1, year
 
-    first_day_of_month = datetime(year, month, 1)
-    first_day_next_month = datetime(next_year, next_month, 1)
-    days_in_month = (first_day_next_month - first_day_of_month).days
+    if month == 1:
+        prev_month, prev_year = 12, year - 1
+    else:
+        prev_month, prev_year = month - 1, year
 
-    rows = []
+    # Заголовок: "Июнь 2025"
+    month_names = [
+        "", "Янв", "Фев", "Мар", "Апр", "Май", "Июн",
+        "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"
+    ]
+    header_text = f"{month_names[month]} {year}"
+
+    # Кнопки навигации
+    prev_button = InlineKeyboardButton(
+        text="◄",
+        callback_data=f"calendar_nav:{prev_year}:{prev_month}:{user_id}"
+    )
+    header_button = InlineKeyboardButton(
+        text=header_text,
+        callback_data="ignore"
+    )
+    next_button = InlineKeyboardButton(
+        text="►",
+        callback_data=f"calendar_nav:{next_year}:{next_month}:{user_id}"
+    )
+
+    rows = [[prev_button, header_button, next_button]]
+
+    # Дни недели
     weekday_headers = [
         InlineKeyboardButton(text=day, callback_data="ignore")
         for day in ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
     ]
     rows.append(weekday_headers)
 
-    first_weekday = first_day_of_month.weekday()
+    # Генерация дней
+    first_day_of_month = datetime(year, month, 1)
+    first_day_next_month = datetime(next_year, next_month, 1)
+    days_in_month = (first_day_next_month - first_day_of_month).days
+
+    first_weekday = first_day_of_month.weekday()  # 0 = понедельник
     current_row = []
 
+    # Пустые ячейки в начале
     for _ in range(first_weekday):
         current_row.append(InlineKeyboardButton(text="✖️", callback_data="ignore"))
 
@@ -80,11 +112,12 @@ def generate_calendar_buttons(user_id: int):
 
         if current_date < today:
             btn = InlineKeyboardButton(text="✖️", callback_data="ignore")
+        elif day in busy_days:
+            btn = InlineKeyboardButton(text="🔴", callback_data="ignore")
         else:
-            # В callback_data добавляем день И user_id
             btn = InlineKeyboardButton(
                 text=str(day),
-                callback_data=f"calendar_day:{day}:{user_id}"
+                callback_data=f"calendar_day:{year}:{month}:{day}:{user_id}"
             )
 
         current_row.append(btn)
@@ -94,6 +127,9 @@ def generate_calendar_buttons(user_id: int):
                 current_row.append(InlineKeyboardButton(text="✖️", callback_data="ignore"))
             rows.append(current_row)
             current_row = []
+
+    # Кнопка "Назад"
+    rows.append([InlineKeyboardButton(text="🔹 Назад 🔹", callback_data="delete_msg")])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -111,7 +147,7 @@ def generate_time_buttons(hours_set: set, user_id: int):
 
     for hour in sorted_hours:
         label = f"{hour}:00"
-        # В callback_data добавляем час И user_id
+        # В callback_data добавляем час и user_id
         button = InlineKeyboardButton(
             text=label,
             callback_data=f"appoint:{hour}:{user_id}"
@@ -125,6 +161,34 @@ def generate_time_buttons(hours_set: set, user_id: int):
     if current_row:
         rows.append(current_row)
 
+    rows.append([InlineKeyboardButton(text="🔹 Назад 🔹", callback_data="delete_msg")])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def generate_duration_buttons(user_id: int):
+    """
+    Клавиатура выбора длительности приёма.
+    В callback_data: duration_in_hours (дробное число)
+    """
+    durations = [
+        ("30 мин", "0.5"),
+        ("1 час", "1.0"),
+        ("1.5 часа", "1.5"),
+        ("2 часа", "2.0"),
+        ("2.5 часа", "2.5"),
+        ("3 часа", "3.0")
+    ]
+
+    rows = []
+    for label, value in durations:
+        button = InlineKeyboardButton(
+            text=label,
+            callback_data=f"duration:{value}:{user_id}"
+        )
+        rows.append([button])
+
+    rows.append([InlineKeyboardButton(text="🔹 Назад 🔹", callback_data="delete_msg")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -193,23 +257,28 @@ def login_menu(index: list):
 
     inline_buttons = [[buttons_dict[idx]] for idx in index if idx in buttons_dict]
 
-    keyboard9 = InlineKeyboardMarkup(inline_keyboard=inline_buttons)
-    return keyboard9
+    return InlineKeyboardMarkup(inline_keyboard=inline_buttons)
 
 
 def mess_menu(index: list, user_id: int):
     buttons_dict = {
-        1: InlineKeyboardButton(text="🔹 ОЖИДАНИЕ 🔹", callback_data=f'mess:await:{user_id}'),
-        2: InlineKeyboardButton(text="🔹 ОТКАЗ 🔹", callback_data=f'mess:refuse:{user_id}'),
-        3: InlineKeyboardButton(text="🔹 ЗВОНИТЕ 🔹", callback_data=f'mess:call:{user_id}'),
-        4: InlineKeyboardButton(text="🔹 НАЗНАЧИТЬ ВРЕМЯ 🔹", callback_data=f'mess:time:{user_id}'),
+        1: InlineKeyboardButton(text="🔹 ОЖИДАНИЕ 🔹", callback_data=f'await:{user_id}'),
+        2: InlineKeyboardButton(text="🔹 ОТКАЗ 🔹", callback_data=f'refuse:{user_id}'),
+        3: InlineKeyboardButton(text="🔹 ЗВОНИТЕ 🔹", callback_data=f'call:{user_id}'),
+        4: InlineKeyboardButton(text="🔹 НАЗНАЧИТЬ ВРЕМЯ 🔹", callback_data=f'set_time:{user_id}'),
         5: InlineKeyboardButton(text="🔹 ОТВЕТИТЬ 🔹", callback_data=f'replay_mess:{user_id}'),
-        6: InlineKeyboardButton(text="🔹 НА СЕГОДНЯ 🔹", callback_data=f'time:today:{user_id}'),
-        7: InlineKeyboardButton(text="🔹 ВЫБРАТЬ ДЕНЬ 🔹", callback_data=f'time:next_days:{user_id}'),
+        6: InlineKeyboardButton(text="🔹 НА СЕГОДНЯ 🔹", callback_data=f'today:{user_id}'),
+        7: InlineKeyboardButton(text="🔹 ВЫБРАТЬ ДЕНЬ 🔹", callback_data=f'next_days:{user_id}'),
+        8: InlineKeyboardButton(text="🔹 Назад 🔹", callback_data="delete_msg")
     }
 
     inline_buttons = [[buttons_dict[idx]] for idx in index if idx in buttons_dict]
     return InlineKeyboardMarkup(inline_keyboard=inline_buttons)
+
+
+def back_button(to: str = "main") -> list:
+    """Универсальная кнопка 'Назад' — возвращает строку для inline_keyboard."""
+    return [InlineKeyboardButton(text="🔙 Назад", callback_data=f"back:{to}")]
 
 
 def check_data():
@@ -217,5 +286,5 @@ def check_data():
         [InlineKeyboardButton(text="✅СОЗДАТЬ УЧЁТНУЮ ЗАПИСЬ", callback_data='correct')],
         [InlineKeyboardButton(text="❌ОТМЕНА", callback_data='incorrect')]
     ]
-    keyboard_2 = InlineKeyboardMarkup(inline_keyboard=kb_list)
-    return keyboard_2
+    return InlineKeyboardMarkup(inline_keyboard=kb_list)
+

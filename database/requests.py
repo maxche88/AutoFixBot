@@ -219,21 +219,20 @@ async def can_mess_true() -> List[int]:
         return result.scalars().all()
 
 
-async def get_occupied_hours(target_date: date) -> List[int]:
+async def get_available_hours(target_date: date):
     """
-    Возвращает список свободных часов на указанную дату.
-    Анализирует все записи в таблице Appointment и исключает занятые часы.
-    Каждая запись может занимать более одного часа (например, с 9:00 до 11:00 → заняты 9 и 10).
-
-    :param target_date: Дата (datetime.date).
-    :return: Список свободных часов (например, [9, 10, 14, 15]).
+    Возвращает set свободных часов на указанную дату.
+    Учитывает пересечение с существующими записями.
+    Не поддерживает 30-минутные слоты, только 1 час.
     """
     async with async_session() as session:
-        start_of_day = datetime.combine(target_date, datetime.min.time())
-        end_of_day = datetime.combine(target_date, datetime.max.time())
+        # Получаем все записи на указанную дату
+        start_of_day = datetime.combine(target_date, time.min)
+        end_of_day = datetime.combine(target_date, time.max)
 
         stmt = select(Appointment).where(
-            Appointment.appointment_date.between(start_of_day, end_of_day)
+            Appointment.appointment_date >= start_of_day,
+            Appointment.appointment_date < end_of_day + timedelta(days=1)
         )
         result = await session.execute(stmt)
         appointments = result.scalars().all()
@@ -241,44 +240,78 @@ async def get_occupied_hours(target_date: date) -> List[int]:
         occupied_hours = set()
 
         for appt in appointments:
-            if not appt.appointment_time or not appt.end_time:
+            start_time = appt.appointment_time  # time, например 10:00
+            end_time = appt.end_time            # time, например 11:30
+
+            if not start_time or not end_time:
                 continue
 
-            # Начало и длительность записи
-            start_dt = datetime.combine(target_date, appt.appointment_time)
-            # Обрабатываем end_time как длительность
-            end_dt = datetime.combine(target_date, appt.end_time)
+            # Преобразуем в datetime для удобства
+            start_dt = datetime.combine(target_date, start_time)
+            end_dt = datetime.combine(target_date, end_time)
 
-            # Если запись переходит на следующий день — ограничиваем текущим днём
-            if end_dt.date() > target_date:
-                end_dt = datetime.combine(target_date, time(23, 59))
+            # Если запись переходит на следующий день (маловероятно, но защитимся)
+            if end_dt <= start_dt:
+                end_dt += timedelta(days=1)
 
-            # Помечаем все часы от начала до конца как занятые
-            current = start_dt
-            while current < end_dt:
-                occupied_hours.add(current.hour)
-                current += timedelta(hours=1)
+            # Определяем, какие часы пересекаются с этим интервалом
+            current_hour = start_dt.hour
+            # Идём по часам, пока начало часа < end_dt
+            while current_hour < 24:
+                hour_start = datetime.combine(target_date, time(current_hour, 0))
+                hour_end = hour_start + timedelta(hours=1)
 
-        free_hours = sorted(DEFAULT_HOURS - occupied_hours)
-        return free_hours
+                # Проверяем пересечение интервалов:
+                # [start_dt, end_dt) пересекается с [hour_start, hour_end)
+                if start_dt < hour_end and end_dt > hour_start:
+                    occupied_hours.add(current_hour)
+                else:
+                    # Так как записи упорядочены по времени, можно выйти,
+                    # но для надёжности — проверим все часы до 24
+                    pass
+
+                current_hour += 1
+                if hour_start >= end_dt:
+                    break
+
+        # Возвращаем свободные часы
+        all_possible_hours = DEFAULT_HOURS  # например, {9, 10, ..., 17}
+        return all_possible_hours - occupied_hours
 
 
-async def create_appointment(user_id: int, date_val: date, hour: int) -> None:
+async def create_appointment(user_id: int, date_val: date, start_hour: float, end_hour: float) -> None:
     """
     Создаёт новую запись на приём.
-    Запись длится 1 час: с `hour:00` до `(hour+1):00`.
 
-    :param user_id: Telegram ID пользователя (в текущей реализации не используется, но зарезервировано).
-    :param date_val: Дата приёма (datetime.date).
-    :param hour: Час начала (например, 9 → запись с 9:00 до 10:00).
+    :param user_id: ID пользователя (может использоваться в будущем)
+    :param date_val: Дата приёма (datetime.date)
+    :param start_hour: Время начала в часах (например, 9.5 → 9:30)
+    :param end_hour: Время окончания в часах (например, 11.0 → 11:00)
     """
-    start_time = time(hour=hour, minute=0)
-    end_time = time(hour=min(hour + 1, 23), minute=0)  # Ограничение: не позже 23:00
 
+    # Преобразуем дробные часы в (часы, минуты)
+    def hour_to_time(h: float) -> time:
+        hours = int(h)
+        minutes = int(round((h - hours) * 60))
+        # Защита от переполнения минут (например, 9.99 → 9:59.4 → 10:00)
+        if minutes >= 60:
+            hours += 1
+            minutes -= 60
+        if hours >= 24:
+            hours = 23
+            minutes = 59
+        return time(hour=hours, minute=minutes)
+
+    start_time = hour_to_time(start_hour)
+    end_time = hour_to_time(end_hour)
+
+    # 🔹 Создаём datetime для начала приёма (используется как основной timestamp)
     appointment_datetime = datetime.combine(date_val, start_time)
 
+    # 🔹 Сохраняем в БД
     async with async_session() as session:
         new_appointment = Appointment(
+            tg_id_user=user_id,
             appointment_date=appointment_datetime,
             appointment_time=start_time,
             end_time=end_time
