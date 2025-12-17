@@ -2,11 +2,13 @@ from aiogram.types import CallbackQuery, Message
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from database.requests import get_user_dict, get_available_hours, create_appointment
+from database.requests import (get_user_dict, get_available_hours, create_appointment, get_active_order_id, add_order,
+                               update_user)
 from func.func_bot import get_greeting
 from config import bot
 from keybords import keybords as kb
 from datetime import date, timedelta
+
 
 # Создаём отдельный роутер для обработки действий персонала (админов и мастеров)
 router = Router()
@@ -24,7 +26,17 @@ class AppointmentStates(StatesGroup):
     choosing_duration = State()  # выбор окончания времени приёма
 
 
-# === 1. ОЖИДАНИЕ ===
+class RepairOrderStates(StatesGroup):
+    entering_description = State()  # ожидание текстового описания
+    confirming = State()            # ожидание подтверждения
+
+
+class MasterEditStates(StatesGroup):
+    choosing_field = State()   # выбор поля
+    editing_field = State()    # ввод значения
+
+
+# === ОЖИДАНИЕ ===
 @router.callback_query(F.data.startswith("await:"))
 async def handle_await_action(call: CallbackQuery):
     parts = call.data.split(":", 1)
@@ -39,7 +51,7 @@ async def handle_await_action(call: CallbackQuery):
     await call.answer()
 
 
-# === 2. ОТКАЗ ===
+# === ОТКАЗ ===
 @router.callback_query(F.data.startswith("refuse:"))
 async def handle_refuse_action(call: CallbackQuery):
     parts = call.data.split(":", 1)
@@ -54,7 +66,7 @@ async def handle_refuse_action(call: CallbackQuery):
     await call.answer()
 
 
-# === 3. ЗВОНИТЕ ===
+# === ЗВОНИТЕ ===
 @router.callback_query(F.data.startswith("call:"))
 async def handle_call_action(call: CallbackQuery):
     parts = call.data.split(":", 1)
@@ -69,7 +81,7 @@ async def handle_call_action(call: CallbackQuery):
     await call.answer()
 
 
-# === 1. НАЗНАЧИТЬ ВРЕМЯ — вход в FSM ===
+# === НАЗНАЧИТЬ ВРЕМЯ — вход в FSM ===
 @router.callback_query(F.data.startswith("set_time:"))
 async def handle_set_time_action(call: CallbackQuery, state: FSMContext):
     parts = call.data.split(":", 1)
@@ -89,13 +101,13 @@ async def handle_set_time_action(call: CallbackQuery, state: FSMContext):
 
     await call.message.answer(
         "Выберите вариант записи:",
-        reply_markup=kb.mess_menu([6, 7, 8], user_id=user_id)
+        reply_markup=kb.staff_menu([6, 7, 8], user_id=user_id)
     )
     await state.set_state(AppointmentStates.choosing_option)
     await call.answer()
 
 
-# === 2. ВЫБОР "НА СЕГОДНЯ" ===
+# === ВЫБОР "НА СЕГОДНЯ" ===
 @router.callback_query(AppointmentStates.choosing_option, F.data.startswith("today:"))
 async def handle_today_selection(call: CallbackQuery, state: FSMContext):
     parts = call.data.split(":", 1)
@@ -115,7 +127,7 @@ async def handle_today_selection(call: CallbackQuery, state: FSMContext):
     if not free_hours:  # Пустой set - нет свободного времени
         await call.message.edit_text(
             "❌ В этот день нет свободного времени для записи.",
-            reply_markup=kb.mess_menu([8], user_id=user_id)
+            reply_markup=kb.staff_menu([8], user_id=user_id)
         )
 
         await call.answer()
@@ -136,7 +148,7 @@ async def handle_today_selection(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-# === 3. "ВЫБРАТЬ ДЕНЬ" ===
+# === "ВЫБРАТЬ ДЕНЬ" ===
 @router.callback_query(AppointmentStates.choosing_option, F.data.startswith("next_days:"))
 async def handle_next_days_selection(call: CallbackQuery, state: FSMContext):
     parts = call.data.split(":", 1)
@@ -181,7 +193,7 @@ async def handle_next_days_selection(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-# === 4. ВЫБОР ДНЯ В КАЛЕНДАРЕ ===
+# === ВЫБОР ДНЯ В КАЛЕНДАРЕ ===
 @router.callback_query(AppointmentStates.choosing_day, F.data.startswith("calendar_day:"))
 async def handle_calendar_day(call: CallbackQuery, state: FSMContext):
     parts = call.data.split(":")
@@ -214,7 +226,7 @@ async def handle_calendar_day(call: CallbackQuery, state: FSMContext):
     if not free_hours:
         await call.message.edit_text(
             f"❌ На {selected_date.strftime('%d.%m.%Y')} нет свободного времени.",
-            reply_markup=kb.mess_menu([8], user_id=user_id)
+            reply_markup=kb.staff_menu([8], user_id=user_id)
         )
         await call.answer()
         return
@@ -283,7 +295,7 @@ async def handle_calendar_navigation(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-# === 5. ВЫБОР ВРЕМЕНИ И ПЕРЕХОД К ВЫБОРУ ДЛИТЕЛЬНОСТИ ===
+# === ВЫБОР ВРЕМЕНИ И ПЕРЕХОД К ВЫБОРУ ДЛИТЕЛЬНОСТИ ===
 @router.callback_query(AppointmentStates.choosing_time, F.data.startswith("appoint:"))
 async def handle_appointment_time(call: CallbackQuery, state: FSMContext):
     parts = call.data.split(":")
@@ -321,10 +333,11 @@ async def handle_appointment_time(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-# === 6. ВЫБОР ДЛИТЕЛЬНОСТИ ===
+# === ВЫБОР ДЛИТЕЛЬНОСТИ ===
 @router.callback_query(AppointmentStates.choosing_duration, F.data.startswith("duration:"))
 async def handle_duration_selection(call: CallbackQuery, state: FSMContext):
     parts = call.data.split(":")
+
     if len(parts) != 3:
         await call.answer("Ошибка формата", show_alert=True)
         await state.clear()
@@ -351,26 +364,36 @@ async def handle_duration_selection(call: CallbackQuery, state: FSMContext):
     # Рассчитываем конец
     end_hour = start_hour + duration_hours
 
+    # Получаем tg_id мастера
+    master_id = call.message.chat.id
+
     # Записываем в БД
-    await create_appointment(user_id, selected_date, start_hour, end_hour)
+    await create_appointment(user_id, master_id, selected_date, start_hour, end_hour)
 
     # Отправляем пользователю
     start_str = f"{int(start_hour)}:{'30' if start_hour % 1 else '00'}"
     end_str = f"{int(end_hour)}:{'30' if end_hour % 1 else '00'}"
 
+    # Присваиваем переменным полученое имя и номер тел.
+    master_name, tel = await get_user_dict(tg_id=master_id, fields=('user_name', 'contact'))
+
     await bot.send_message(
         chat_id=user_id,
-        text=f"✅ Запись подтверждена!\n"
-             f"📅 Дата: {selected_date.strftime('%d.%m.%Y')}\n"
-             f"🕒 Время: {start_str}–{end_str}"
+        text=(
+            f"✅ Запись подтверждена!\n"
+            f"👤 Имя мастера: {master_name}\n"
+            f"🔵 Телеграм: {master_id}\n"
+            f"📞 Сот. тел.: {tel}\n"
+            f"📅 Дата: {selected_date.strftime('%d.%m.%Y')}\n"
+            f"🕒 Время: {start_str}–{end_str}\n\n"
+            f"При встрече с мастером после осмотра вашего авто необхдимо будет отправить заявку на ремонт. "
+            f"Нажав на кнопку которая расположена под данным сообщением."
+        ),
+        reply_markup=kb.repair_request_button(client_tg_id=user_id, master_tg_id=master_id)
     )
 
-    try:
-        await call.message.delete()
-    except:
-        pass
-
-    await call.message.answer("✅ Запись отправлена пользователю!")
+    await call.message.delete()
+    await call.message.answer("✅ Форма отправлена пользователю!")
     await state.clear()
     await call.answer()
 
@@ -403,11 +426,10 @@ async def custom_reply_to_user(call: CallbackQuery, state: FSMContext):
     # Устанавливаем состояние ожидания текста
     await state.set_state(AdminReply.waiting_for_text)
 
+
 # === СООБЩЕНИЕ НА ВОПРОС ПОЛЬЗОВАТЕЛЯ (state 2) ===
 # После того как админ ввёл текст, бот получает его, находит имя пользователя в БД
 # и отправляет персонализированное сообщение пользователю.
-
-
 @router.message(AdminReply.waiting_for_text)
 async def send_custom_reply(message: Message, state: FSMContext):
     # Получаем сохранённый tg_id из состояния админа
@@ -439,7 +461,134 @@ async def send_custom_reply(message: Message, state: FSMContext):
     await state.clear()
 
 
+# === СОЗДАНИЕ ЗАЯВКИ ===
+
+# Типы работ для быстрого выбора
+TYPE_DESCRIPTIONS = {
+    "diagnostic": "Диагностика",
+    "repair": "Ремонт",
+    "diag_repair": "Диагностика и ремонт",
+    "to": "Техническое обслуживание"
+}
 
 
+@router.callback_query(F.data.startswith("repair_type:"))
+async def start_repair_order_process(call: CallbackQuery, state: FSMContext):
+    """
+    Запускает FSM создания заказа после выбора типа работ.
+    Если выбран 'custom' — переходит к вводу описания.
+    Иначе — подставляет описание и показывает кнопку создания заказа.
+    """
+    parts = call.data.split(":")
+    if len(parts) != 4:
+        await call.answer("❌ Некорректный формат данных", show_alert=True)
+        return
 
+    action = parts[1]
+    client_tg_id = int(parts[2])
+    master_tg_id = int(parts[3])
+
+    await state.update_data(
+        client_tg_id=client_tg_id,
+        master_tg_id=master_tg_id
+    )
+
+    if action == "custom":
+        await call.message.answer("Введите описание работ (до 100 символов):")
+        await state.set_state(RepairOrderStates.entering_description)
+    else:
+        description = TYPE_DESCRIPTIONS.get(action, "Ремонт")
+        await state.update_data(description=description)
+        await call.message.answer(
+            f"Описание работ: {description}",
+            reply_markup=kb.create_repair_order_button(client_tg_id, master_tg_id)
+        )
+        await state.set_state(RepairOrderStates.confirming)
+
+    await call.answer()
+
+
+@router.message(RepairOrderStates.entering_description)
+async def handle_custom_description(message: Message, state: FSMContext):
+    """
+    Обрабатывает ввод описания работ от мастера.
+    Проверяет длину (макс. 100 символов) и показывает кнопку создания заказа.
+    """
+    text = message.text
+    if not text:
+        await message.answer("Пожалуйста, введите описание.")
+        return
+    if len(text) > 100:
+        await message.answer("Описание не должно превышать 100 символов. Попробуйте снова:")
+        return
+
+    data = await state.get_data()
+    client_tg_id = data["client_tg_id"]
+    master_tg_id = data["master_tg_id"]
+
+    await state.update_data(description=text)
+    await message.answer(
+        f"Описание работ: {text}",
+        reply_markup=kb.create_repair_order_button(client_tg_id, master_tg_id),
+    )
+    await state.set_state(RepairOrderStates.confirming)
+
+
+@router.callback_query(RepairOrderStates.confirming, F.data.startswith("create_order:"))
+async def create_repair_order(call: CallbackQuery, state: FSMContext):
+    """
+    Создаёт заказ в базе данных после подтверждения мастера.
+    Проверяет существование пользователей и отсутствие активного заказа.
+    """
+    parts = call.data.split(":")
+    if len(parts) != 3:
+        return
+
+    try:
+        client_tg_id = int(parts[1])
+        master_tg_id = int(parts[2])
+    except ValueError:
+        return
+
+    data = await state.get_data()
+    description = data.get("description", "Без описания")
+
+    client_data = await get_user_dict(client_tg_id)
+    master_data = await get_user_dict(master_tg_id)
+    if not client_data or not master_data:
+        await call.answer("❌ Пользователь не найден", show_alert=True)
+        await state.clear()
+        return
+
+    active_order_id = await get_active_order_id(client_tg_id, master_tg_id)
+    if active_order_id is not None:
+        await call.answer(f"❌ Уже есть активная заявка №{active_order_id}!", show_alert=True)
+        await state.clear()
+        return
+
+    order_data = {
+        "tg_id_user": client_tg_id,
+        "tg_id_master": master_tg_id,
+        "user_name": client_data["user_name"],
+        "master_name": master_data["user_name"],
+        "repair_status": "in_work",
+        "complied": False,
+        "description": description,
+        "brand_auto": client_data["brand_auto"],
+        "gos_num": client_data["gos_num"]
+    }
+    await add_order(order_data)
+
+    await call.message.edit_reply_markup(reply_markup=None)
+    await call.message.answer("✅ Заявка на ремонт создана!")
+    await state.clear()
+    await call.answer()
+
+
+@router.callback_query(F.data == "back_to_repair_type")
+async def back_to_repair_type(call: CallbackQuery, state: FSMContext):
+    """Возврат к исходному выбору: удаляет текущее сообщение и сбрасывает состояние."""
+    await call.message.delete()
+    await state.clear()
+    await call.answer()
 

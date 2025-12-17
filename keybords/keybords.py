@@ -243,8 +243,8 @@ def login_menu(index: list):
         5: InlineKeyboardButton(text="🔹 ПРОДОЛЖИТЬ 🔹", callback_data='car_rep_next'),
         6: InlineKeyboardButton(text="🔺 ОТМЕНА 🔺", callback_data='cancel'),
         7: InlineKeyboardButton(text="🔹 ВСТАТЬ В ОЧЕРЕДЬ 🔹", callback_data='in_stack'),
-        8: InlineKeyboardButton(text="🔹 ЗАПИСАТЬСЯ НА РЕМОНТ 🔹", callback_data='create_rec'),
-        9: InlineKeyboardButton(text="🔹 ЗАДАТЬ ВОПРОС 🔹", callback_data='send_message'),
+        8: InlineKeyboardButton(text="🔹 МОЙ РЕМОНТ 🔹", callback_data='info_rem'),
+        9: InlineKeyboardButton(text="🔹 ЗАПИСАТЬСЯ / ЗАДАТЬ ВОПРОС 🔹", callback_data='send_message'),
         10: InlineKeyboardButton(text="🔹 ОСТАВИТЬ ОТЗЫВ 🔹", callback_data='send'),
         11: InlineKeyboardButton(text="🔹 МОИ ДАННЫЕ 🔹", callback_data='login'),
         12: InlineKeyboardButton(text="🔹 ИЗМЕНИТЬ ДАННЫЕ 🔹", callback_data='edit_menu'),
@@ -253,6 +253,7 @@ def login_menu(index: list):
         15: InlineKeyboardButton(text="🔹 ГОД ВЫПУСКА 🔹", callback_data='edit:year_auto'),
         16: InlineKeyboardButton(text="🔹 ВИН НОМЕР 🔹", callback_data='edit:vin_number'),
         17: InlineKeyboardButton(text="🔹 КОНТАКТНЫЙ НОМЕР 🔹", callback_data='edit:contact'),
+        18: InlineKeyboardButton(text="🔹 ГОС. НОМЕР 🔹", callback_data='edit:gos_num'),
     }
 
     inline_buttons = [[buttons_dict[idx]] for idx in index if idx in buttons_dict]
@@ -260,7 +261,7 @@ def login_menu(index: list):
     return InlineKeyboardMarkup(inline_keyboard=inline_buttons)
 
 
-def mess_menu(index: list, user_id: int):
+def staff_menu(index: list, user_id: int):
     buttons_dict = {
         1: InlineKeyboardButton(text="🔹 ОЖИДАНИЕ 🔹", callback_data=f'await:{user_id}'),
         2: InlineKeyboardButton(text="🔹 ОТКАЗ 🔹", callback_data=f'refuse:{user_id}'),
@@ -279,6 +280,76 @@ def mess_menu(index: list, user_id: int):
 def back_button(to: str = "main") -> list:
     """Универсальная кнопка 'Назад' — возвращает строку для inline_keyboard."""
     return [InlineKeyboardButton(text="🔙 Назад", callback_data=f"back:{to}")]
+
+
+def repair_type_keyboard(client_tg_id: int, master_tg_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(
+                text="🔹 ДИАГНОСТИКА 🔹",
+                callback_data=f"repair_type:diagnostic:{client_tg_id}:{master_tg_id}"
+            )],
+            [InlineKeyboardButton(
+                text="🔹 РЕМОНТ 🔹",
+                callback_data=f"repair_type:repair:{client_tg_id}:{master_tg_id}"
+            )],
+            [InlineKeyboardButton(
+                text="🔹 ДИАГНОСТИКА И РЕМОНТ 🔹",
+                callback_data=f"repair_type:diag_repair:{client_tg_id}:{master_tg_id}"
+            )],
+            [InlineKeyboardButton(
+                text="🔹 ТЕХ. ОБСЛУЖИВАНИЕ 🔹",
+                callback_data=f"repair_type:to:{client_tg_id}:{master_tg_id}"
+            )],
+            [InlineKeyboardButton(
+                text="🔹 ВВЕСТИ ТЕКСТОМ 🔹",
+                callback_data=f"repair_type:custom:{client_tg_id}:{master_tg_id}"
+            )]
+        ]
+    )
+
+
+def create_repair_order_button(client_tg_id: int, master_tg_id: int) -> InlineKeyboardMarkup:
+    """
+    Создаёт inline-кнопки для создания заявки на ремонт и возможность венуться назад.
+
+    :param client_tg_id: Telegram ID клиента.
+    :param master_tg_id: Telegram ID мастера.
+    :return: InlineKeyboardMarkup с одной кнопкой.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Создать заявку на ремонт",
+                    callback_data=f"create_order:{client_tg_id}:{master_tg_id}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔙 Назад к выбору",
+                    callback_data=f"back_to_repair_type"
+                )
+            ]
+        ]
+    )
+
+
+def repair_request_button(client_tg_id: int, master_tg_id: int) -> InlineKeyboardMarkup:
+    """
+    Кнопка для клиента: отправить заявку на ремонт.
+    Передаёт оба ID — клиента и мастера.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔹 ОТПРАВИТЬ ЗАЯВКУ НА РЕМОНТ 🔹",
+                    callback_data=f"send_repair_req:{client_tg_id}:{master_tg_id}"
+                )
+            ]
+        ]
+    )
 
 
 def check_data():

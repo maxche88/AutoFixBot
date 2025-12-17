@@ -180,6 +180,7 @@ async def get_user_dict(tg_id: int, fields: Optional[Tuple[str, ...]] = None) ->
             "contact": user.contact,
             "brand_auto": user.brand_auto,
             "year_auto": user.year_auto,
+            "gos_num": user.gos_num,
             "vin_number": user.vin_number,
             "date": user.date.isoformat(),
         }
@@ -279,11 +280,12 @@ async def get_available_hours(target_date: date):
         return all_possible_hours - occupied_hours
 
 
-async def create_appointment(user_id: int, date_val: date, start_hour: float, end_hour: float) -> None:
+async def create_appointment(user_id: int, master_id: int, date_val: date, start_hour: float, end_hour: float) -> None:
     """
     Создаёт новую запись на приём.
 
-    :param user_id: ID пользователя (может использоваться в будущем)
+    :param user_id: ID пользователя
+    :param master_id: ID мастера который записал клиента
     :param date_val: Дата приёма (datetime.date)
     :param start_hour: Время начала в часах (например, 9.5 → 9:30)
     :param end_hour: Время окончания в часах (например, 11.0 → 11:00)
@@ -312,9 +314,37 @@ async def create_appointment(user_id: int, date_val: date, start_hour: float, en
     async with async_session() as session:
         new_appointment = Appointment(
             tg_id_user=user_id,
+            tg_id_master=master_id,
             appointment_date=appointment_datetime,
             appointment_time=start_time,
             end_time=end_time
         )
         session.add(new_appointment)
         await session.commit()
+
+
+async def add_order(data: Dict[str, Any]) -> None:
+    """
+    Добавляет новый заказ в таблицу Orders.
+
+    :param data: Словарь с полями модели Orders.
+    """
+    async with async_session() as session:
+        order_obj = Orders(**data)
+        session.add(order_obj)
+        await session.commit()
+
+
+async def get_active_order_id(tg_id_user: int, tg_id_master: int) -> Optional[int]:
+    """
+    Возвращает ID заказа со статусом 'in_work' между клиентом и мастером.
+    Если такого заказа нет — возвращает None.
+    """
+    async with async_session() as session:
+        stmt = select(Orders.id).where(
+            Orders.tg_id_user == tg_id_user,
+            Orders.tg_id_master == tg_id_master,
+            Orders.repair_status == "in_work"
+        )
+        result = await session.execute(stmt)
+        return result.scalar()  # Возвращает int или None

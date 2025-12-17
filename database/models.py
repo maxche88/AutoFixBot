@@ -35,6 +35,7 @@ class User(Base):
     contact: Mapped[str] = mapped_column(String(20), nullable=True, comment="Контактный телефон")
     brand_auto: Mapped[str] = mapped_column(String(20), nullable=True, comment="Марка автомобиля")
     year_auto: Mapped[str] = mapped_column(String(20), default="-", comment="Год выпуска автомобиля")
+    gos_num: Mapped[str] = mapped_column(String(20), default="-", comment="Гоc. Номер")
     vin_number: Mapped[str] = mapped_column(String(20), default="-", comment="VIN-номер автомобиля")
     role: Mapped[str] = mapped_column(String(10), default="user", comment="Роль: 'user', 'admin' или 'master'")
     can_messages: Mapped[bool] = mapped_column(Boolean(), default=False, comment="Может ли получать сообщения")
@@ -44,17 +45,19 @@ class User(Base):
 class Orders(Base):
     """
     Таблица заказов на ремонт/обслуживание.
-
     Связывает пользователя и мастера, отслеживает статус выполнения работ.
     """
     __tablename__ = 'orders'
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    description: Mapped[str] = mapped_column(String(100), nullable=True, comment="Описание работ или неисправности")
+    brand_auto: Mapped[str] = mapped_column(String(20), nullable=True, comment="Марка автомобиля")
+    gos_num: Mapped[str] = mapped_column(String(20), default="-", comment="Гоc. Номер")
     tg_id_user: Mapped[int] = mapped_column(BigInteger, comment="Telegram ID клиента")
     tg_id_master: Mapped[int] = mapped_column(BigInteger, comment="Telegram ID мастера")
     user_name: Mapped[str] = mapped_column(String(20), comment="Имя клиента")
     master_name: Mapped[str] = mapped_column(String(20), comment="Имя мастера")
-    repair_status: Mapped[str] = mapped_column(String(20), comment="в работе/ожидает/завершён")
+    repair_status: Mapped[str] = mapped_column(String(20), comment="in_work/wait/close")
     date: Mapped[datetime] = mapped_column(DateTime, default=current_time, comment="Дата создания заказа")
     complied: Mapped[bool] = mapped_column(Boolean(), default=False, comment="True = закрыт клиентом")
 
@@ -68,6 +71,7 @@ class Appointment(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     tg_id_user: Mapped[int] = mapped_column(BigInteger, comment="Telegram ID клиента")
+    tg_id_master: Mapped[int] = mapped_column(BigInteger, comment="Telegram ID мастера")
     appointment_date: Mapped[datetime] = mapped_column(DateTime, comment="Дата записи")
     appointment_time: Mapped[time] = mapped_column(Time, comment="Начало временного слота")
     end_time: Mapped[time] = mapped_column(Time, comment="Окончание временного слота")
