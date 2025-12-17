@@ -248,7 +248,7 @@ async def handle_calendar_navigation(call: CallbackQuery, state: FSMContext):
         await call.answer("❌ Некорректные данные", show_alert=True)
         return
 
-    # Проверим, не ушли ли слишком далеко в прошлое/будущее (опционально)
+    # Проверим, не ушли ли слишком далеко в прошлое/будущее
     today = date.today()
     target_date = date(year, month, 1)
     if target_date < today.replace(day=1) - timedelta(days=30):
@@ -321,7 +321,7 @@ async def handle_appointment_time(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-# === 6. ВЫБОР ДЛИТЕЛЬНОСТИ → ЗАПИСЬ В БД ===
+# === 6. ВЫБОР ДЛИТЕЛЬНОСТИ ===
 @router.callback_query(AppointmentStates.choosing_duration, F.data.startswith("duration:"))
 async def handle_duration_selection(call: CallbackQuery, state: FSMContext):
     parts = call.data.split(":")
