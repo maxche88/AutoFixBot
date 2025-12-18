@@ -237,14 +237,15 @@ def user_menu():
 
 def login_menu(index: list):
     buttons_dict = {
-        1: InlineKeyboardButton(text="🔹 РЕМОНТ 🔹", callback_data='car_repair'),
-        2: InlineKeyboardButton(text="🔹 ТЕХНИЧЕСКОЕ ОБСЛУЖИВАНИЕ 🔹", callback_data='#'),
-        3: InlineKeyboardButton(text="🔹 ДИАГНОСТИКА 🔹", callback_data='#'),
+        1: InlineKeyboardButton(text="🔹 РЕМОНТ 🔹", callback_data='service:repair'),
+        2: InlineKeyboardButton(text="🔹 ТЕХ. ОБСЛУЖИВАНИЕ 🔹", callback_data='service:maintenance'),
+        3: InlineKeyboardButton(text="🔹 ДИАГНОСТИКА 🔹", callback_data='service:diagnostics'),
+        4: InlineKeyboardButton(text="🔹 ЗАПИСАТЬСЯ 🔹", callback_data='sign_up'),
         5: InlineKeyboardButton(text="🔹 ПРОДОЛЖИТЬ 🔹", callback_data='car_rep_next'),
         6: InlineKeyboardButton(text="🔺 ОТМЕНА 🔺", callback_data='cancel'),
         7: InlineKeyboardButton(text="🔹 ВСТАТЬ В ОЧЕРЕДЬ 🔹", callback_data='in_stack'),
         8: InlineKeyboardButton(text="🔹 МОЙ РЕМОНТ 🔹", callback_data='info_rem'),
-        9: InlineKeyboardButton(text="🔹 ЗАПИСАТЬСЯ / ЗАДАТЬ ВОПРОС 🔹", callback_data='send_message'),
+        9: InlineKeyboardButton(text="🔹 ЗАДАТЬ ВОПРОС 🔹", callback_data='send_message'),
         10: InlineKeyboardButton(text="🔹 ОСТАВИТЬ ОТЗЫВ 🔹", callback_data='send'),
         11: InlineKeyboardButton(text="🔹 МОИ ДАННЫЕ 🔹", callback_data='login'),
         12: InlineKeyboardButton(text="🔹 ИЗМЕНИТЬ ДАННЫЕ 🔹", callback_data='edit_menu'),
@@ -254,6 +255,8 @@ def login_menu(index: list):
         16: InlineKeyboardButton(text="🔹 ВИН НОМЕР 🔹", callback_data='edit:vin_number'),
         17: InlineKeyboardButton(text="🔹 КОНТАКТНЫЙ НОМЕР 🔹", callback_data='edit:contact'),
         18: InlineKeyboardButton(text="🔹 ГОС. НОМЕР 🔹", callback_data='edit:gos_num'),
+        19: InlineKeyboardButton(text="✅ Записаться", callback_data="confirm_booking"),
+        20: InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_booking"),
     }
 
     inline_buttons = [[buttons_dict[idx]] for idx in index if idx in buttons_dict]
@@ -358,4 +361,22 @@ def check_data():
         [InlineKeyboardButton(text="❌ОТМЕНА", callback_data='incorrect')]
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb_list)
+
+
+def send_answer(client_tg_id: int, master_tg_id: int) -> InlineKeyboardMarkup:
+    """
+    Кнопка для получателя сообщения: отправить ответ на сообщение.
+    Передаёт оба ID — клиента и мастера.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔹 ОТВЕТИТЬ 🔹",
+                    callback_data=f"send_answer:{client_tg_id}:{master_tg_id}"
+                )
+            ]
+        ]
+    )
+
 

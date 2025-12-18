@@ -41,11 +41,8 @@ class MasterEditStates(StatesGroup):
 async def handle_await_action(call: CallbackQuery):
     parts = call.data.split(":", 1)
     user_id = int(parts[1])
-    user_dict = await get_user_dict(user_id, ("user_name",))
-    user_name = user_dict[0] if user_dict else "Пользователь"
-    greeting = await get_greeting()
 
-    response_text = f"{greeting} {user_name}!\n\nВ данный момент занят. Отвечу, как только освобожусь!"
+    response_text = "В данный момент занят. Отвечу, как только освобожусь!"
     await bot.send_message(chat_id=user_id, text=response_text)
     await call.message.answer("✅ Ответ «Ожидание» отправлен пользователю.")
     await call.answer()
@@ -56,11 +53,7 @@ async def handle_await_action(call: CallbackQuery):
 async def handle_refuse_action(call: CallbackQuery):
     parts = call.data.split(":", 1)
     user_id = int(parts[1])
-    user_dict = await get_user_dict(user_id, ("user_name",))
-    user_name = user_dict[0] if user_dict else "Пользователь"
-    greeting = await get_greeting()
-
-    response_text = f"{greeting} {user_name}!\n\nК сожалению, не сможем помочь с этой проблемой."
+    response_text = f"К сожалению, не сможем помочь с этой проблемой."
     await bot.send_message(chat_id=user_id, text=response_text)
     await call.message.answer("✅ Ответ «Отказ» отправлен пользователю.")
     await call.answer()
@@ -71,12 +64,15 @@ async def handle_refuse_action(call: CallbackQuery):
 async def handle_call_action(call: CallbackQuery):
     parts = call.data.split(":", 1)
     user_id = int(parts[1])
-    user_dict = await get_user_dict(user_id, ("user_name",))
-    user_name = user_dict[0] if user_dict else "Пользователь"
-    greeting = await get_greeting()
+    master_tg_id = call.from_user.id
 
-    response_text = f"{greeting} {user_name}!\n\nЗвоните по номеру: +79999999999"
-    await bot.send_message(chat_id=user_id, text=response_text)
+    master_name, master_contact = await get_user_dict(master_tg_id, ("user_name", "contact"))
+
+    response_text = (f'Звоните по номеру!\n'
+                     f'Имя: {master_name}\n'
+                     f'Сот. тел.: <a href="tel:{master_contact}">{master_contact}</a>')
+
+    await bot.send_message(chat_id=user_id, text=response_text, parse_mode="HTML")
     await call.message.answer("✅ Ответ «Звоните» отправлен пользователю.")
     await call.answer()
 
@@ -95,8 +91,7 @@ async def handle_set_time_action(call: CallbackQuery, state: FSMContext):
         await call.answer("Некорректный ID", show_alert=True)
         return
 
-    user_dict = await get_user_dict(user_id, ("user_name",))
-    user_name = user_dict[0] if user_dict else "Пользователь"
+    user_name, = await get_user_dict(user_id, ("user_name",))
     await state.update_data(target_user_id=user_id, user_name=user_name)
 
     await call.message.answer(
@@ -386,8 +381,7 @@ async def handle_duration_selection(call: CallbackQuery, state: FSMContext):
             f"📞 Сот. тел.: {tel}\n"
             f"📅 Дата: {selected_date.strftime('%d.%m.%Y')}\n"
             f"🕒 Время: {start_str}–{end_str}\n\n"
-            f"При встрече с мастером после осмотра вашего авто необхдимо будет отправить заявку на ремонт. "
-            f"Нажав на кнопку которая расположена под данным сообщением."
+            f"После осмотра вашего авто, по просьбе мастера вы можете нажать на кнопку расположенную ниже."
         ),
         reply_markup=kb.repair_request_button(client_tg_id=user_id, master_tg_id=master_id)
     )
@@ -413,7 +407,7 @@ async def handle_delete_msg(call: CallbackQuery, state: FSMContext):
 async def custom_reply_to_user(call: CallbackQuery, state: FSMContext):
     # Разбиваем callback_data вида "replay_mess:123456789" на части
     parts = call.data.split(":")
-    # Проверяем корректность формата (ожидаем ровно 2 части)
+    # Проверяем корректность формата
     if len(parts) != 2:
         await call.answer("Ошибка данных", show_alert=True)
         return
@@ -435,6 +429,7 @@ async def send_custom_reply(message: Message, state: FSMContext):
     # Получаем сохранённый tg_id из состояния админа
     data = await state.get_data()
     user_id = data.get("target_user_id")
+    master_id = message.chat.id
 
     # Безопасная проверка: если ID отсутствует — выходим
     if not user_id:
@@ -443,16 +438,13 @@ async def send_custom_reply(message: Message, state: FSMContext):
         return
 
     # Запрашиваем имя пользователя из базы данных
-    user_dict = await get_user_dict(user_id, ("user_name",))
-    user_name = user_dict[0] if user_dict else "Пользователь"
+    master_name, = await get_user_dict(master_id, ("user_name",))
 
-    # Генерируем персональное приветствие
-    greeting = await get_greeting()
-
-    # Отправляем сообщение пользователю
+    # Отправляем сообщение пользователю с кнопкой для обратной связи
     await bot.send_message(
         chat_id=user_id,
-        text=f"{greeting} {user_name}\n\n{message.text}"
+        text=f"{master_name}:\n{message.text}",
+        reply_markup=kb.send_answer(client_tg_id=user_id, master_tg_id=master_id)
     )
 
     # Подтверждаем, что сообщение отправлено
@@ -476,8 +468,8 @@ TYPE_DESCRIPTIONS = {
 async def start_repair_order_process(call: CallbackQuery, state: FSMContext):
     """
     Запускает FSM создания заказа после выбора типа работ.
-    Если выбран 'custom' — переходит к вводу описания.
-    Иначе — подставляет описание и показывает кнопку создания заказа.
+    Если выбран "ВВЕСТИ ТЕКСТОМ" — переходит к вводу описания.
+    Иначе — подставляет быстрое описание и показывает кнопку создания заказа.
     """
     parts = call.data.split(":")
     if len(parts) != 4:
@@ -579,8 +571,23 @@ async def create_repair_order(call: CallbackQuery, state: FSMContext):
     }
     await add_order(order_data)
 
+    # Отправляем сообщение пользователю с подтверждением о принятом автомобиле в работу
+    await bot.send_message(
+        chat_id=client_tg_id,
+        text=f"Ваш автомобиль принят на ремонт!\n\n"
+             f"Имя клиента: {client_data['user_name']}\n"
+             f"Сот. тел.: {client_data['contact']}\n"
+             f"Марка авто: {client_data['brand_auto']}\n"
+             f"Год: {client_data['year_auto']}\n"
+             f"Гос номер: {client_data['gos_num']}\n"
+             f"Имя мастера: {master_data['user_name']}\n"
+             f"Сот. тел.: {master_data['contact']}\n"
+             f"Описание работ: {description}\n"
+             f"Статус работ: 'В работе'\n"
+    )
+
     await call.message.edit_reply_markup(reply_markup=None)
-    await call.message.answer("✅ Заявка на ремонт создана!")
+    await call.message.answer("✅ Вы приняли в ремонт автомобиль. Заявка на ремонт создана!")
     await state.clear()
     await call.answer()
 
