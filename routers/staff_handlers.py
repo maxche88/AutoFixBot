@@ -3,8 +3,7 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from database.requests import (get_user_dict, get_available_hours, create_appointment, get_active_order_id, add_order,
-                               update_user)
-from func.func_bot import get_greeting
+                               get_orders_by_user, update_order)
 from config import bot
 from keybords import keybords as kb
 from datetime import date, timedelta
@@ -34,6 +33,169 @@ class RepairOrderStates(StatesGroup):
 class MasterEditStates(StatesGroup):
     choosing_field = State()   # выбор поля
     editing_field = State()    # ввод значения
+
+
+class MasterOrderActions(StatesGroup):
+    choosing_action = State()   # выбор: быстрый ответ или текст
+    waiting_for_message = State()  # ожидание текста от мастера
+
+
+REPAIR_STATUS_DISPLAY = {
+    "in_work": "В работе",
+    "wait": "Ожидание",
+    "close": "Закрыт"
+}
+
+
+# ===========================
+# ========= МАСТЕР ==========
+# ===========================
+
+# ЛИЧНЫЙ КАБИНЕТ МАСТЕРА"
+
+# ВЫБОР "ТЕКУЩИЕ ЗАКАЗЫ"
+@router.callback_query(F.data == "my_actions_orders")
+async def master_current_orders(call: CallbackQuery, state: FSMContext):
+    master_id = call.from_user.id
+    # Получаем активные заказы, где пользователь — мастер
+    orders = await get_orders_by_user(tg_id_master=master_id, active=True)
+
+    if not orders:
+        await call.message.answer("❌ Нет активных заказов. ❌")
+    else:
+        for order in orders:
+            date_str = order.get("date", "не указана")
+            if isinstance(date_str, str) and "T" in date_str:
+                date_str = date_str.split("T")[0]
+
+            status_raw = order['repair_status']
+            status_display = REPAIR_STATUS_DISPLAY.get(status_raw, status_raw)
+            order_id = order['id']
+            user_contact = order['user_contact']
+            tg_id_user = order['tg_id_user']
+
+            text = (
+                f"🆔 ID заказа: {order_id}\n\n"
+                f"👤 Клиент: {order['user_name']}\n"
+                f'📱 Телеграм ID: <a href="tg://user?id={tg_id_user}">{tg_id_user}</a>\n'
+                f'📞 Сот.тел: <a href="tel:{user_contact}">{user_contact}</a>\n'
+                f"🚗 Марка авто: {order.get('brand_auto') or '—'}\n"
+                f"📆 Год выпуска: {order.get('year_auto') or '—'}\n"
+                f"ℹ️ VIN: {order.get('vin_number') or '—'}\n"
+                f"🔢 Гос. номер: {order.get('gos_num') or '—'}\n"
+                f"🔧 Статус: {status_display}\n"
+                f"📝 Описание:\n{order.get('description') or '—'}\n\n"
+                f"📅 Дата создания: {date_str}"
+            )
+
+            await call.message.answer(
+                text,
+                parse_mode="HTML",
+                reply_markup=kb.master_order_action_menu([1, 2, 3, 4, 5, 6, 8], order_id, tg_id_user)
+            )
+
+    await call.answer()
+
+
+# ВЫБОР ВЫПОЛНЕНО
+# Роутер: обрабатывает complied_order:order_id:client_tg_id
+@router.callback_query(F.data.startswith("complied_order:"))
+async def handle_complied_order(call: CallbackQuery, state: FSMContext):
+    parts = call.data.split(":")
+    if len(parts) != 3:
+        await call.answer("❌ Неверный формат", show_alert=True)
+        return
+
+    try:
+        order_id = int(parts[1])
+        client_tg_id = int(parts[2])
+    except ValueError:
+        await call.answer("❌ Некорректные ID", show_alert=True)
+        return
+
+    master_tg_id = call.from_user.id
+
+    # Сохраняем данные в состоянии
+    await state.update_data(
+        order_id=order_id,
+        client_tg_id=client_tg_id,
+        master_tg_id=master_tg_id
+    )
+
+    # Показываем выбор действия
+    await call.message.answer(
+        f"ID заказа {order_id}\n"
+        f" Выберите действие:",
+        reply_markup=kb.quick_action_menu()
+    )
+    await state.set_state(MasterOrderActions.choosing_action)
+    await call.answer()
+
+
+# ВЫБОР: "Можете забирать"
+@router.callback_query(MasterOrderActions.choosing_action, F.data == "quick:answer")
+async def send_quick_pickup(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    client_tg_id = data["client_tg_id"]
+    order_id = data["order_id"]
+    master_tg_id = data["master_tg_id"]
+
+    # Получаем имя мастера
+    master_name, = await get_user_dict(master_tg_id, ("user_name",))
+
+    # Обновляем заказ: статус = wait, complied = True
+    await update_order(order_id, "wait", complied=True)
+
+    # Отправляем клиенту
+    await bot.send_message(
+        chat_id=client_tg_id,
+        text=f"✅ Сообщение от {master_name}:\n\n"
+             f"«Можете принимать работу и забирать автомобиль!»\n\n",
+        reply_markup=kb.get_accept_work_keyboard(order_id, master_tg_id)  # Кнопка "Принять работу"
+    )
+
+    await call.message.answer("✅ Сообщение «Можете забирать» отправлено клиенту.")
+    await state.clear()
+    await call.message.delete()
+    await call.answer()
+
+
+# ВЫБОР "Отправить сообщение"
+@router.callback_query(MasterOrderActions.choosing_action, F.data == "quick:text")
+async def request_custom_message(call: CallbackQuery, state: FSMContext):
+    await call.message.answer("✍️ Введите сообщение для клиента:")
+    await state.set_state(MasterOrderActions.waiting_for_message)
+    await call.answer()
+
+
+# РОУТЕР ловит текст от мастера и отправляет клиенту
+@router.message(MasterOrderActions.waiting_for_message)
+async def send_custom_message_to_client(message: Message, state: FSMContext):
+    data = await state.get_data()
+    client_tg_id = data["client_tg_id"]
+    order_id = data["order_id"]
+    master_tg_id = data["master_tg_id"]
+
+    master_name, = await get_user_dict(master_tg_id, ("user_name",))
+
+    # Обновляем статус заказа
+    await update_order(order_id, "wait", complied=True)
+
+    # Отправляем сообщение клиенту
+    await bot.send_message(
+        chat_id=client_tg_id,
+        text=f"✅ Сообщение от {master_name}:\n\n"
+             f"{message.text}\n",
+        reply_markup=kb.get_accept_work_keyboard(order_id, master_tg_id)  # Кнопка "Принять работу"
+    )
+
+    await message.answer("✅ Ваше сообщение отправлено клиенту.")
+    await state.clear()
+
+
+# ===========================
+# ВЗАИМОДЕЙСТВИЕ С КЛИЕНТОМ
+# ===========================
 
 
 # === ОЖИДАНИЕ ===
@@ -102,7 +264,6 @@ async def handle_set_time_action(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-# === ВЫБОР "НА СЕГОДНЯ" ===
 @router.callback_query(AppointmentStates.choosing_option, F.data.startswith("today:"))
 async def handle_today_selection(call: CallbackQuery, state: FSMContext):
     parts = call.data.split(":", 1)
@@ -377,13 +538,13 @@ async def handle_duration_selection(call: CallbackQuery, state: FSMContext):
         text=(
             f"✅ Запись подтверждена!\n"
             f"👤 Имя мастера: {master_name}\n"
-            f"🔵 Телеграм: {master_id}\n"
+            f"📱 Телеграм: {master_id}\n"
             f"📞 Сот. тел.: {tel}\n"
             f"📅 Дата: {selected_date.strftime('%d.%m.%Y')}\n"
             f"🕒 Время: {start_str}–{end_str}\n\n"
             f"После осмотра вашего авто, по просьбе мастера вы можете нажать на кнопку расположенную ниже."
         ),
-        reply_markup=kb.repair_request_button(client_tg_id=user_id, master_tg_id=master_id)
+        reply_markup=kb.action_buttons_orders_menu([7], user_id, master_id)
     )
 
     await call.message.delete()
@@ -426,7 +587,7 @@ async def custom_reply_to_user(call: CallbackQuery, state: FSMContext):
 # и отправляет персонализированное сообщение пользователю.
 @router.message(AdminReply.waiting_for_text)
 async def send_custom_reply(message: Message, state: FSMContext):
-    # Получаем сохранённый tg_id из состояния админа
+    # Получаем сохранённый tg_id из состояния мастера
     data = await state.get_data()
     user_id = data.get("target_user_id")
     master_id = message.chat.id
@@ -444,7 +605,7 @@ async def send_custom_reply(message: Message, state: FSMContext):
     await bot.send_message(
         chat_id=user_id,
         text=f"{master_name}:\n{message.text}",
-        reply_markup=kb.send_answer(client_tg_id=user_id, master_tg_id=master_id)
+        reply_markup=kb.action_buttons_orders_menu([8], user_id, master_id)
     )
 
     # Подтверждаем, что сообщение отправлено
@@ -453,7 +614,7 @@ async def send_custom_reply(message: Message, state: FSMContext):
     await state.clear()
 
 
-# === СОЗДАНИЕ ЗАЯВКИ ===
+# === СОЗДАНИЕ ЗАКАЗА ===
 
 # Типы работ для быстрого выбора
 TYPE_DESCRIPTIONS = {
@@ -493,7 +654,7 @@ async def start_repair_order_process(call: CallbackQuery, state: FSMContext):
         await state.update_data(description=description)
         await call.message.answer(
             f"Описание работ: {description}",
-            reply_markup=kb.create_repair_order_button(client_tg_id, master_tg_id)
+            reply_markup=kb.action_buttons_orders_menu([6, 9], client_tg_id, master_tg_id)
         )
         await state.set_state(RepairOrderStates.confirming)
 
@@ -521,7 +682,7 @@ async def handle_custom_description(message: Message, state: FSMContext):
     await state.update_data(description=text)
     await message.answer(
         f"Описание работ: {text}",
-        reply_markup=kb.create_repair_order_button(client_tg_id, master_tg_id),
+        reply_markup=kb.action_buttons_orders_menu([6, 9], client_tg_id, master_tg_id),
     )
     await state.set_state(RepairOrderStates.confirming)
 
@@ -562,28 +723,32 @@ async def create_repair_order(call: CallbackQuery, state: FSMContext):
         "tg_id_user": client_tg_id,
         "tg_id_master": master_tg_id,
         "user_name": client_data["user_name"],
+        "user_contact": client_data["contact"],
         "master_name": master_data["user_name"],
+        "master_contact": master_data["contact"],
         "repair_status": "in_work",
         "complied": False,
         "description": description,
         "brand_auto": client_data["brand_auto"],
-        "gos_num": client_data["gos_num"]
+        "gos_num": client_data["gos_num"],
+        "year_auto": client_data["year_auto"],
+        "vin_number": client_data["vin_number"]
     }
     await add_order(order_data)
 
     # Отправляем сообщение пользователю с подтверждением о принятом автомобиле в работу
     await bot.send_message(
         chat_id=client_tg_id,
-        text=f"Ваш автомобиль принят на ремонт!\n\n"
-             f"Имя клиента: {client_data['user_name']}\n"
-             f"Сот. тел.: {client_data['contact']}\n"
-             f"Марка авто: {client_data['brand_auto']}\n"
-             f"Год: {client_data['year_auto']}\n"
-             f"Гос номер: {client_data['gos_num']}\n"
-             f"Имя мастера: {master_data['user_name']}\n"
-             f"Сот. тел.: {master_data['contact']}\n"
-             f"Описание работ: {description}\n"
-             f"Статус работ: 'В работе'\n"
+        text=f"✅ Ваш автомобиль принят в ремонт!\n\n"
+             f"👤 Имя клиента: {client_data['user_name']}\n"
+             f"📞 Сот. тел.: {client_data['contact']}\n"
+             f"🚗 Марка авто: {client_data['brand_auto']}\n"
+             f"📆 Год: {client_data['year_auto']}\n"
+             f"🔢 Гос номер: {client_data['gos_num']}\n"
+             f"👤 Имя мастера: {master_data['user_name']}\n"
+             f"📞 Сот. тел.: {master_data['contact']}\n"
+             f"📄 Описание работ: {description}\n"
+             f"🔧 Статус: 'В работе'\n\n"
     )
 
     await call.message.edit_reply_markup(reply_markup=None)
@@ -592,10 +757,10 @@ async def create_repair_order(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-@router.callback_query(F.data == "back_to_repair_type")
-async def back_to_repair_type(call: CallbackQuery, state: FSMContext):
-    """Возврат к исходному выбору: удаляет текущее сообщение и сбрасывает состояние."""
-    await call.message.delete()
+# РОУТЕР слушает кнопку назад, очищает состояния и удаляет сообщение
+@router.callback_query(F.data == "cancel")
+async def cancel_quick_action(call: CallbackQuery, state: FSMContext):
     await state.clear()
+    await call.message.delete()
     await call.answer()
 

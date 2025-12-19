@@ -307,7 +307,7 @@ async def create_appointment(user_id: int, master_id: int, date_val: date, start
     start_time = hour_to_time(start_hour)
     end_time = hour_to_time(end_hour)
 
-    # 🔹 Создаём datetime для начала приёма (используется как основной timestamp)
+    # 🔹 Создаём datetime для начала приёма
     appointment_datetime = datetime.combine(date_val, start_time)
 
     # 🔹 Сохраняем в БД
@@ -348,3 +348,95 @@ async def get_active_order_id(tg_id_user: int, tg_id_master: int) -> Optional[in
         )
         result = await session.execute(stmt)
         return result.scalar()  # Возвращает int или None
+
+
+async def get_orders_by_user(
+    tg_id_user: Optional[int] = None,
+    tg_id_master: Optional[int] = None,
+    active: bool = True
+) -> List[Dict[str, Any]]:
+    """
+    Возвращает список заказов:
+    - Если указан tg_id_user → заказы клиента.
+    - Если указан tg_id_master → заказы мастера.
+    - Можно указать оба.
+
+    :param tg_id_user: Telegram ID клиента (опционально).
+    :param tg_id_master: Telegram ID мастера (опционально).
+    :param active:
+        - True → заказы со статусом in_work/wait
+        - False → только заказы со close.
+    :return: Список словарей с данными заказов.
+    :raises ValueError: если не указан ни tg_id_user, ни tg_id_master.
+    """
+    if tg_id_user is None and tg_id_master is None:
+        raise ValueError("Укажите хотя бы один из параметров: tg_id_user или tg_id_master")
+
+    async with async_session() as session:
+        conditions = []
+
+        if tg_id_user is not None:
+            conditions.append(Orders.tg_id_user == tg_id_user)
+        if tg_id_master is not None:
+            conditions.append(Orders.tg_id_master == tg_id_master)
+
+        if active:
+            conditions.append(Orders.repair_status != "close")
+        else:
+            conditions.append(Orders.repair_status == "close")
+
+        stmt = select(Orders).where(*conditions)
+        result = await session.execute(stmt)
+        orders = result.scalars().all()
+
+        orders_list = []
+        for order in orders:
+            orders_list.append({
+                "id": order.id,
+                "tg_id_user": order.tg_id_user,
+                "tg_id_master": order.tg_id_master,
+                "user_name": order.user_name,
+                "user_contact": order.user_contact,
+                "master_name": order.master_name,
+                "master_contact": order.master_contact,
+                "repair_status": order.repair_status,
+                "complied": order.complied,
+                "description": order.description,
+                "brand_auto": order.brand_auto,
+                "year_auto": order.year_auto,
+                "gos_num": order.gos_num,
+                "vin_number": order.vin_number,
+                "date": order.date.isoformat() if order.date else "не указана",
+            })
+        return orders_list
+
+
+async def update_order(
+        order_id: int,
+        repair_status: str | None = None,
+        complied: bool | None = None,
+        description: str | None = None,
+) -> bool:
+    """
+    Обновляет указанные поля заказа по его ID.
+    Обновляются только те поля, которые переданы (не None).
+
+    :return: True, если заказ найден и обновлён.
+    """
+    # Собираем только те поля, которые нужно обновить
+    update_data = {}
+    if repair_status is not None:
+        update_data["repair_status"] = repair_status
+    if complied is not None:
+        update_data["complied"] = complied
+    if description is not None:
+        update_data["description"] = description
+
+    if not update_data:
+        return False  # Нечего обновлять
+
+    async with async_session() as session:
+        stmt = update(Orders).where(Orders.id == order_id).values(**update_data)
+        result = await session.execute(stmt)
+        await session.commit()
+        return result.rowcount > 0
