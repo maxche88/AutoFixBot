@@ -1,13 +1,28 @@
 import os
 from dotenv import load_dotenv
-from aiogram import Bot
-from aiogram.enums.parse_mode import ParseMode
-from aiogram.client.default import DefaultBotProperties
 
 
 load_dotenv()
 
-bot = Bot(os.getenv('API_TOKEN'), default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 
-# Рабочие часы по умолчанию: с 8 до 23 (24 не включён)
-DEFAULT_HOURS = set(range(8, 24))
+class Config:
+    API_TOKEN = os.getenv("API_TOKEN")
+    ADMIN_ID = os.getenv("ADMIN_ID")
+
+    # Ссылка на карту
+    SERVICE_LOCATION_URL = ("https://yandex.ru/navi/"
+                            "?whatshere%5Bpoint%5D=73.305003%2C54.908418&whatshere%5Bzoom%5D=18&lang=ru&from=navi")
+
+    # Контакты
+    SUPPORT_PHONE = "+7 (999) 123-45-67"
+    SUPPORT_EMAIL = "info@autoservis.ru"
+
+    # Адрес СТО
+    OFFICE_ADDRESS = "г. Омск, ул. 2-я Казахстанская, 3Б"
+
+    # Рабочие часы по умолчанию: с 8 до 23 (24 не включён)
+    WORKING_HOURS = "Пн–Сб: 08:00–19:00\nВс: выходной"
+    DEFAULT_HOURS = set(range(8, 24))
+
+
+config = Config()

@@ -93,3 +93,4 @@ class Comments(Base):
     user_name: Mapped[str] = mapped_column(String(20), comment="Имя автора отзыва")
     text: Mapped[str] = mapped_column(String(128), comment="Текст отзыва")
     date: Mapped[datetime] = mapped_column(DateTime, default=current_time, comment="Дата публикации отзыва")
+    is_visible: Mapped[bool] = mapped_column(Boolean, default=True, comment="Отображать отзыв (True = да)")

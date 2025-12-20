@@ -1,21 +1,37 @@
 # This Python file uses the following encoding: utf-8
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import date, datetime
+from config import config
 
 
-authorization = InlineKeyboardButton(text='🔆 АВТОРИЗАЦИЯ 🔆', callback_data='authorization')
-keyboard = InlineKeyboardMarkup(inline_keyboard=[[authorization]])
+def auth_menu():
+    kb_list = [
+        [InlineKeyboardButton(text='🔆 АВТОРИЗАЦИЯ 🔆', callback_data='authorization')]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=kb_list)
 
-user_chat = InlineKeyboardButton(text='Показать на Яндекс Карте',
-                                 url='https://yandex.ru/navi/?whatshere%5Bpoint%5D=73.305003%2C54.'
-                                     '908418&whatshere%5Bzoom%5D=18&lang=ru&from=navi')
-keyboard5 = InlineKeyboardMarkup(inline_keyboard=[[user_chat]])
 
-comment_onas = [
-    [InlineKeyboardButton(text='Показать отзывы наших клиентов', callback_data='comment')],
-    [InlineKeyboardButton(text='Цены услуг ремонта', callback_data='price')]
-]
-keyboard7 = InlineKeyboardMarkup(inline_keyboard=comment_onas)
+def location_menu():
+    kb_list = [
+        [InlineKeyboardButton(
+            text='Показать на Яндекс Карте',
+            url=config.SERVICE_LOCATION_URL
+        )],
+        [InlineKeyboardButton(
+            text='🔺 Скрыть 🔺',
+            callback_data='cancel'
+        )]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=kb_list)
+
+
+def comment_menu():
+    kb_list = [
+        [InlineKeyboardButton(text='Показать отзывы наших клиентов', callback_data='comment')],
+        [InlineKeyboardButton(text='Цены услуг ремонта', callback_data='price')],
+        [InlineKeyboardButton(text='🔺 Скрыть 🔺', callback_data='cancel')]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=kb_list)
 
 
 def generate_calendar_buttons(user_id: int, year: int, month: int, busy_days: set = None):
@@ -107,7 +123,7 @@ def generate_calendar_buttons(user_id: int, year: int, month: int, busy_days: se
             current_row = []
 
     # Кнопка "Назад"
-    rows.append([InlineKeyboardButton(text="🔹 Назад 🔹", callback_data="delete_msg")])
+    rows.append([InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="delete_msg")])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -139,7 +155,7 @@ def generate_time_buttons(hours_set: set, user_id: int):
     if current_row:
         rows.append(current_row)
 
-    rows.append([InlineKeyboardButton(text="🔹 Назад 🔹", callback_data="delete_msg")])
+    rows.append([InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="delete_msg")])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -166,7 +182,7 @@ def generate_duration_buttons(user_id: int):
         )
         rows.append([button])
 
-    rows.append([InlineKeyboardButton(text="🔹 Назад 🔹", callback_data="delete_msg")])
+    rows.append([InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="delete_msg")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -225,7 +241,7 @@ def master_order_action_menu(index: list, order_id: int = None, tg_id: int = Non
         5: InlineKeyboardButton(text="🔹 ПЕРЕДАТЬ ЗАКАЗ 🔹", callback_data=f"transfer_order:{order_id}:{tg_id}"),
         6: InlineKeyboardButton(text="🔹 УДАЛИТЬ ЗАКАЗ 🔹", callback_data=f"delete_order:{order_id}"),
         7: InlineKeyboardButton(text="🔹 ВОЗОБНОВИТЬ ЗАКАЗ 🔹", callback_data=f"resume_order:{order_id}"),
-        8: InlineKeyboardButton(text="🔹 Назад 🔹", callback_data="cancel"),
+        8: InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="cancel"),
     }
 
     inline_buttons = [[buttons_dict[idx]] for idx in index if idx in buttons_dict]
@@ -236,35 +252,102 @@ def quick_action_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ МОЖЕТЕ ЗАБИРАТЬ", callback_data="quick:answer")],
         [InlineKeyboardButton(text="✏️ Отправить сообщение", callback_data="quick:text")],
-        [InlineKeyboardButton(text="🔹 Назад 🔹", callback_data="cancel")]
+        [InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="cancel")]
     ])
 
 
-def user_menu():
-    kb_list_3 = [
+def user_main_menu():
+    kb_list = [
         [InlineKeyboardButton(text="🔹 ЛИЧНЫЙ КАБИНЕТ 🔹", callback_data='account')],
         [InlineKeyboardButton(text="🔹 ИНФОРМАЦИЯ 🔹", callback_data='o_nas')],
-        [InlineKeyboardButton(text="🔹 ЧАСТО ЗАДАВАЕМЫЕ ВОПРОСЫ 🔹", callback_data='FAQ')],
+        [InlineKeyboardButton(text="🔹 ЧАСТО ЗАДАВАЕМЫЕ ВОПРОСЫ 🔹", callback_data='faq')],
         [InlineKeyboardButton(text="️🔹 ️КОНТАКТЫ. АДРЕС СТО 🔹", callback_data='get_person')]
     ]
 
-    return InlineKeyboardMarkup(inline_keyboard=kb_list_3)
+    return InlineKeyboardMarkup(inline_keyboard=kb_list)
+
+
+# ПОДМЕНЮ ЛИЧНЫЙ КАБИНЕТ
+def user_personal_account():
+    kb_list = [
+        [InlineKeyboardButton(text="🔹 ТЕКУЩИЙ РЕМОНТ 🔹", callback_data='info_rem')],
+        [InlineKeyboardButton(text="🔹 ЗАПИСАТЬСЯ 🔹", callback_data='appointment')],
+        [InlineKeyboardButton(text="🔹 ЗАДАТЬ ВОПРОС 🔹", callback_data='send_message')],
+        [InlineKeyboardButton(text="🔹 НАПИСАТЬ ОТЗЫВ 🔹", callback_data='create_comment')],
+        [InlineKeyboardButton(text="🔹 МОИ ДАННЫЕ 🔹", callback_data='login')],
+        [InlineKeyboardButton(text="🔺 Назад 🔺", callback_data='back_main_menu')],
+    ]
+
+    return InlineKeyboardMarkup(inline_keyboard=kb_list)
+
+
+# ВОЗВРАЩАЕТ В ЛИЧНЫЙ КАБ., УДАЛЯЕТ ТЕКУЩИЕ ЗАКАЗЫ
+def user_back_personal_account() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="back_to_account")]
+    ])
+
+
+def user_return_to_profile():
+    kb_list = [
+        [InlineKeyboardButton(text="🔺 Назад 🔺", callback_data='back_personal_account')],
+    ]
+
+    return InlineKeyboardMarkup(inline_keyboard=kb_list)
+
+
+# ЗАПИСАТЬСЯ НА ДИАГНОСТИКА/РЕМОНТ/ТО
+def user_reg_repairs():
+    kb_list = [
+        [InlineKeyboardButton(text="🔹 ДИАГНОСТИКА 🔹", callback_data='service:diagnostics')],
+        [InlineKeyboardButton(text="🔹 РЕМОНТ 🔹", callback_data='service:repair')],
+        [InlineKeyboardButton(text="🔹 ТЕХ. ОБСЛУЖИВАНИЕ 🔹", callback_data='service:maintenance')],
+        [InlineKeyboardButton(text="🔺 Назад 🔺", callback_data='back_personal_account')],
+    ]
+
+    return InlineKeyboardMarkup(inline_keyboard=kb_list)
+
+
+# ПОДТВЕРЖДЕНИЕ ОТПРАВКИ СООБЩЕНИЯ ВСЕМ МАСТЕРАМ
+def user_confirm_send_mess():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Отправить", callback_data="confirm_support_msg")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_support_msg")]
+    ])
+
+
+# ПОДТВЕРЖДЕНИЕ ОТПРАВКИ ОТЗЫВА
+def user_confirm_send_comment():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Отправить", callback_data="confirm_comment")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_comment")]
+    ])
+
+
+# ИЗМЕНИТЬ ЛИЧНЫЕ ДАННЫЕ
+def user_edit_profile():
+    kb_list = [
+        [InlineKeyboardButton(text="🔹 ИЗМЕНИТЬ ДАННЫЕ 🔹", callback_data='edit_menu')],
+        [InlineKeyboardButton(text="🔺 Назад 🔺", callback_data='back_personal_account')],
+    ]
+
+    return InlineKeyboardMarkup(inline_keyboard=kb_list)
 
 
 def login_menu(index: list):
     buttons_dict = {
-        1: InlineKeyboardButton(text="🔹 РЕМОНТ 🔹", callback_data='service:repair'),
-        2: InlineKeyboardButton(text="🔹 ТЕХ. ОБСЛУЖИВАНИЕ 🔹", callback_data='service:maintenance'),
-        3: InlineKeyboardButton(text="🔹 ДИАГНОСТИКА 🔹", callback_data='service:diagnostics'),
-        4: InlineKeyboardButton(text="🔹 ЗАПИСАТЬСЯ 🔹", callback_data='appointment'),
+        1: InlineKeyboardButton(text="🔹 РЕМОНТ 🔹", callback_data='service:repair'),  #
+        2: InlineKeyboardButton(text="🔹 ТЕХ. ОБСЛУЖИВАНИЕ 🔹", callback_data='service:maintenance'),  #
+        3: InlineKeyboardButton(text="🔹 ДИАГНОСТИКА 🔹", callback_data='service:diagnostics'),  #
+        4: InlineKeyboardButton(text="🔹 ЗАПИСАТЬСЯ 🔹", callback_data='appointment'),  #
         5: InlineKeyboardButton(text="🔹 ПРОДОЛЖИТЬ 🔹", callback_data='car_rep_next'),
-        6: InlineKeyboardButton(text="🔺 ОТМЕНА 🔺", callback_data='cancel'),
+        6: InlineKeyboardButton(text="🔺 Назад 🔺", callback_data='cancel'),
         7: InlineKeyboardButton(text="🔹 ВСТАТЬ В ОЧЕРЕДЬ 🔹", callback_data='in_stack'),
-        8: InlineKeyboardButton(text="🔹 ТЕКУЩИЙ РЕМОНТ 🔹", callback_data='info_rem'),
-        9: InlineKeyboardButton(text="🔹 ЗАДАТЬ ВОПРОС 🔹", callback_data='send_message'),
-        10: InlineKeyboardButton(text="🔹 НАПИСАТЬ ОТЗЫВ 🔹", callback_data='create_comment'),
-        11: InlineKeyboardButton(text="🔹 МОИ ДАННЫЕ 🔹", callback_data='login'),
-        12: InlineKeyboardButton(text="🔹 ИЗМЕНИТЬ ДАННЫЕ 🔹", callback_data='edit_menu'),
+        8: InlineKeyboardButton(text="🔹 ТЕКУЩИЙ РЕМОНТ 🔹", callback_data='info_rem'),  #
+        9: InlineKeyboardButton(text="🔹 ЗАДАТЬ ВОПРОС 🔹", callback_data='send_message'),  #
+        10: InlineKeyboardButton(text="🔹 НАПИСАТЬ ОТЗЫВ 🔹", callback_data='create_comment'),  #
+        11: InlineKeyboardButton(text="🔹 МОИ ДАННЫЕ 🔹", callback_data='login'),  #
+        12: InlineKeyboardButton(text="🔹 ИЗМЕНИТЬ ДАННЫЕ 🔹", callback_data='edit_menu'),  #
         13: InlineKeyboardButton(text="🔹 ИМЯ 🔹", callback_data='edit:user_name'),
         14: InlineKeyboardButton(text="🔹 МАРКА АВТО 🔹", callback_data='edit:brand_auto'),
         15: InlineKeyboardButton(text="🔹 ГОД ВЫПУСКА 🔹", callback_data='edit:year_auto'),
@@ -300,7 +383,7 @@ def staff_menu(index: list, user_id: int):
         5: InlineKeyboardButton(text="🔹 ОТВЕТИТЬ 🔹", callback_data=f'replay_mess:{user_id}'),
         6: InlineKeyboardButton(text="🔹 НА СЕГОДНЯ 🔹", callback_data=f'today:{user_id}'),
         7: InlineKeyboardButton(text="🔹 ВЫБРАТЬ ДЕНЬ 🔹", callback_data=f'next_days:{user_id}'),
-        8: InlineKeyboardButton(text="🔹 Назад 🔹", callback_data="delete_msg"),
+        8: InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="delete_msg"),
     }
 
     inline_buttons = [[buttons_dict[idx]] for idx in index if idx in buttons_dict]
@@ -358,7 +441,7 @@ def action_buttons_orders_menu(index: list, client_tg_id: int, master_tg_id: int
 
         # --- Кнопка "Назад" ---
         9: InlineKeyboardButton(
-            text="🔙 Назад к выбору",
+            text="🔺 Назад к выбору 🔺",
             callback_data="cancel"
         ),
     }
@@ -369,13 +452,13 @@ def action_buttons_orders_menu(index: list, client_tg_id: int, master_tg_id: int
 
 def back_button(to: str = "main") -> list:
     """Универсальная кнопка 'Назад' — возвращает строку для inline_keyboard."""
-    return [InlineKeyboardButton(text="🔙 Назад", callback_data=f"back:{to}")]
+    return [InlineKeyboardButton(text="🔺 Назад 🔺", callback_data=f"back:{to}")]
 
 
 def check_data():
     kb_list = [
         [InlineKeyboardButton(text="✅СОЗДАТЬ УЧЁТНУЮ ЗАПИСЬ", callback_data='correct')],
-        [InlineKeyboardButton(text="❌ОТМЕНА", callback_data='incorrect')]
+        [InlineKeyboardButton(text="🔺 ОТМЕНА 🔺", callback_data='incorrect')]
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb_list)
 

@@ -4,7 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from database.requests import (get_user_dict, get_available_hours, create_appointment, get_active_order_id, add_order,
                                get_orders_by_user, update_order)
-from config import bot
+from bot import bot
 from keybords import keybords as kb
 from datetime import date, timedelta
 

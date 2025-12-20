@@ -5,20 +5,20 @@ import asyncio
 from routers.common_handlers import router as common_router
 from routers.staff_handlers import router as staff_router
 from database.engine import init_db
-from config import bot
+from bot import bot
 from services.init_admin import init_admin_user
 
 
+# Настройка логирования
 log_dir = "logs"
-if not os.path.exists(log_dir):
-    os.makedirs(log_dir)
+os.makedirs(log_dir, exist_ok=True)
 
-log_file = os.path.join(log_dir, "bot.log")
-logging.basicConfig(filename='logs/bot.log',
-                    level=logging.INFO,
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    encoding='utf-8'
-                    )
+logging.basicConfig(
+    filename=os.path.join(log_dir, "bot.log"),
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    encoding='utf-8'
+)
 
 dp = Dispatcher()
 
@@ -36,5 +36,8 @@ if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print('🛑 Бот остановлен')
+        print('🛑 Бот остановлен вручную.')
+    except Exception as e:
+        logging.error(f"Критическая ошибка: {e}")
+        print(f"❌ Ошибка: {e}")
 

@@ -10,7 +10,7 @@ from database.engine import async_session
 from sqlalchemy import update, select, delete
 from datetime import datetime, timedelta, date, time
 from typing import Optional, Union, Tuple, List, Dict, Any
-from config import DEFAULT_HOURS
+from config import config
 
 
 def connection(func):
@@ -62,6 +62,9 @@ async def add_user(data: Dict[str, Any]) -> None:
         await session.commit()
 
 
+# ==============================
+# КОММЕНТАРИИ
+# ==============================
 async def add_comment(data: Dict[str, Any]) -> None:
     """
     Добавляет отзыв (комментарий) от пользователя.
@@ -72,6 +75,45 @@ async def add_comment(data: Dict[str, Any]) -> None:
         comment_obj = Comments(**data)
         session.add(comment_obj)
         await session.commit()
+
+
+async def get_visible_comments(mode: str = "user") -> List[Dict[str, Any]]:
+    """
+    Возвращает отзывы в зависимости от режима.
+
+    :param mode:
+        - "user" → только отзывы с is_visible=True (для клиентов),
+        - "all"  → все отзывы без фильтрации (для модератора/админа).
+    :return: Список словарей с данными отзывов.
+    """
+    async with async_session() as session:
+        if mode == "all":
+            # Модератор: все отзывы
+            stmt = select(Comments).order_by(Comments.date.desc())
+        elif mode == "user":
+            # Пользователь: только разрешённые
+            stmt = select(Comments).where(Comments.is_visible.is_(True)).order_by(Comments.date.desc())
+        else:
+            raise ValueError(f"Неизвестный режим: {mode}. Ожидались 'user' или 'all'.")
+
+        result = await session.execute(stmt)
+        comments = result.scalars().all()
+
+        comment_list = []
+        for c in comments:
+            item = {
+                "id": c.id,
+                "tg_id": c.tg_id,
+                "user_name": c.user_name,
+                "text": c.text,
+                "date": c.date.isoformat() if c.date else "не указана"
+            }
+            # Для модератора добавляем служебное поле
+            if mode == "all":
+                item["is_visible"] = c.is_visible
+            comment_list.append(item)
+
+        return comment_list
 
 
 async def add_grade(user_id: int, rate: int) -> None:
@@ -276,7 +318,7 @@ async def get_available_hours(target_date: date):
                     break
 
         # Возвращаем свободные часы
-        all_possible_hours = DEFAULT_HOURS  # например, {9, 10, ..., 17}
+        all_possible_hours = config.DEFAULT_HOURS  # например, {9, 10, ..., 17}
         return all_possible_hours - occupied_hours
 
 

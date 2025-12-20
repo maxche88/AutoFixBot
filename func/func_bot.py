@@ -5,13 +5,13 @@ async def get_greeting():
     now = datetime.now().hour
 
     if 6 <= now < 12:
-        greeting = "🔆Доброе утро!"
+        greeting = "Доброе утро!"
     elif 12 <= now < 18:
-        greeting = " 🔆 Добрый день"
+        greeting = "Добрый день"
     elif 18 <= now < 23:
-        greeting = "🔆 Добрый вечер!"
+        greeting = "Добрый вечер!"
     else:
-        greeting = "🌙 Доброй ночи!"
+        greeting = "Доброй ночи!"
 
     return greeting
 

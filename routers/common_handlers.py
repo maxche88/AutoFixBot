@@ -7,22 +7,22 @@
 
 Основные компоненты:
 - FSM-состояния для пошаговых сценариев (регистрация, редактирование данных и т.д.)
-- Валидация ввода (телефон и др.)
+- Валидация ввода
 - Интеграция с базой данных через `database.requests`
 - Использование клавиатур из `keybords.keybords`
 """
 
 from aiogram import Router, types, F
-from config import bot
+from bot import bot
 from aiogram.filters.command import Command
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from keybords import keybords as kb
-from database.requests import (get_user_role, add_user, add_comment, add_grade, all_orders_by_user,
-                               count_and_name_gen, delete_order, get_user_dict, update_user, can_mess_true,
-                               get_orders_by_user, update_order)
+from database.requests import (get_user_role, add_user, add_comment, add_grade, get_user_dict, update_user,
+                               can_mess_true, get_orders_by_user, update_order, get_visible_comments)
 from func.func_bot import get_greeting
+from config import config
 import re
 
 
@@ -52,7 +52,8 @@ class Edit(StatesGroup):
 
 class Mess(StatesGroup):
     """Состояния для отправки сообщения в поддержку и последующего взаимодействия."""
-    mess_step = State()
+    mess_step = State()  # ввод текста
+    confirm_step = State()  # подтверждение
 
 
 class Repair(StatesGroup):
@@ -62,9 +63,10 @@ class Repair(StatesGroup):
     car_repair_step3 = State()
 
 
-class Send(StatesGroup):
+class Send_feedback(StatesGroup):
     """Состояния для оставления отзыва."""
     send_text = State()
+    confirm = State()
 
 
 class ClientReply(StatesGroup):
@@ -81,56 +83,6 @@ class Booking(StatesGroup):
 class AcceptWork(StatesGroup):
     """Состояния для подтверждения работы и поставить оценку мастеру."""
     waiting_for_grade = State()
-
-
-# ==============================
-# ВХОД
-# ==============================
-@router.message(Command("start"))
-async def cmd_start(message: types.Message) -> None:
-    """
-    Обрабатывает команду /start.
-
-    В зависимости от роли пользователя показывает разные клавиатуры:
-    - user → обычное меню
-    - master → меню мастера
-    - admin → админ-панель
-    Если пользователь не авторизован — просит пройти авторизацию.
-    """
-    user_id = message.from_user.id
-    name = message.chat.first_name
-
-    role = await get_user_role(user_id)
-
-    # Если пользователь не найден в БД
-    if role is None:
-        await message.answer(
-            f"{name} <b>Пожалуйста, пройдите быструю АВТОРИЗАЦИЮ.</b>\n"
-            "Это обязательная процедура для использования сервиса!",
-            reply_markup=kb.keyboard
-        )
-        return
-
-    # Выбираем клавиатуру в зависимости от роли
-    if role == "admin":
-        reply_markup = kb.admin_menu()  # клавиатура админа
-    elif role == "master":
-        reply_markup = kb.master_menu()  # клавиатура мастера
-    elif role == "user":
-        reply_markup = kb.user_menu()  # клавиатура клиента
-    else:
-        # Если в БД оказалась неизвестная роль
-        reply_markup = kb.keyboard
-
-    greeting = await get_greeting()
-    await message.answer_photo(
-        photo=titul_img,
-        caption=(
-            f"<b>{greeting} {name}</b>\n\n"
-            "Для удобства пользуйтесь кнопками ниже ⬇️"
-        ),
-        reply_markup=reply_markup
-    )
 
 
 # ==============================
@@ -210,7 +162,7 @@ async def confirm_registration(call: CallbackQuery, state: FSMContext) -> None:
     await call.message.answer_photo(photo=titul_img)
     await call.message.answer(
         "Поздравляем, вы авторизированы! Теперь вы можете пользоваться данным сервисом.",
-        reply_markup=kb.user_menu()
+        reply_markup=kb.user_main_menu()
     )
 
     data = await state.get_data()
@@ -233,9 +185,47 @@ async def cancel_registration(call: CallbackQuery, state: FSMContext) -> None:
     await call.message.edit_reply_markup(reply_markup=None)
     await call.message.answer(
         "<b>Пожалуйста, пройдите быструю Авторизацию</b>",
-        reply_markup=kb.keyboard
+        reply_markup=kb.auth_menu()
     )
     await state.clear()
+
+
+# ==============================
+# ВХОД
+# ==============================
+@router.message(Command("start"))
+async def cmd_start(message: types.Message) -> None:
+    user_id = message.from_user.id
+    name = message.chat.first_name
+
+    role = await get_user_role(user_id)
+
+    if role is None:
+        await message.answer(
+            f"{name}, <b>пожалуйста, пройдите быструю АВТОРИЗАЦИЮ.</b>\n"
+            "Это обязательная процедура для использования сервиса!",
+            reply_markup=kb.auth_menu()
+        )
+        return
+
+    await message.answer_photo(photo=titul_img)
+
+    menu_text = (
+        f"{'⚙'* 16}\n"
+        f"<b>{await get_greeting()} {name}</b>\n"
+        "📁 Главное меню"
+    )
+
+    if role == "admin":
+        reply_markup = kb.admin_menu()
+    elif role == "master":
+        reply_markup = kb.master_menu()
+    elif role == "user":
+        reply_markup = kb.user_main_menu()
+    else:
+        reply_markup = kb.auth_menu()
+
+    await message.answer(menu_text, reply_markup=reply_markup, parse_mode="HTML")
 
 
 # ==============================
@@ -243,21 +233,41 @@ async def cancel_registration(call: CallbackQuery, state: FSMContext) -> None:
 # ==============================
 @router.callback_query(F.data == "account")
 async def account_menu(call: CallbackQuery) -> None:
-    """Открывает главное меню личного кабинета."""
-    name = call.message.chat.first_name
-    await call.message.answer(
-        f"<b>{name}, вы вошли в личный кабинет!</b>\n"
-        "Здесь вы можете:\n"
-        "— Записаться на ремонт, диагностику или ТО\n"
-        "— Задать вопрос по ремонту\n"
-        "— Оставить отзыв или оценить мастера\n"
-        "— Изменить регистрационные данные",
-        reply_markup=kb.login_menu([8, 4, 9, 10, 11])
+    """Открывает главное меню личного кабинета с обновлённым текстом."""
+    await call.message.edit_text(
+        text=f"{'⚙'* 16}\n"
+             "📁 Личный кабинет",
+        reply_markup=kb.user_personal_account()
     )
+    await call.answer()
+
+
+@router.callback_query(F.data == "back_main_menu")
+async def back_to_main_menu(call: CallbackQuery):
+    """Возвращает пользователя в основное меню."""
+    await call.message.edit_text(
+        text=f"{'⚙'* 16}\n"
+             "📁 Главное меню",
+        reply_markup=kb.user_main_menu()
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "back_personal_account")
+async def back_to_personal_account(call: CallbackQuery, state: FSMContext):
+    """Возвращает пользователя из подменю 'С выбором типа работ' в 'Личный кабинет'"""
+    await state.clear()
+    await call.message.edit_text(
+        text=f"{'⚙' * 16}\n"
+             f"📁 Личный кабинет\n"
+             f"Выберите действие:",
+        reply_markup=kb.user_personal_account()  # возвращаем в подменю личный кабинет
+    )
+    await call.answer()
 
 
 # ==============================
-# ТЕКУЩИЙ РЕМОНТ info_rem
+# ТЕКУЩИЙ РЕМОНТ
 # ==============================
 
 REPAIR_STATUS_DISPLAY = {
@@ -273,44 +283,74 @@ async def info_rem(call: CallbackQuery, state: FSMContext):
     orders = await get_orders_by_user(tg_id_user=user_id, active=True)
 
     if not orders:
-        await call.message.answer("❌ НЕТ ЗАКАЗОВ ❌.")
-    else:
-        for order in orders:
-            date_str = order.get("date", "не указана")
-            if isinstance(date_str, str) and "T" in date_str:
-                date_str = date_str.split("T")[0]
+        await call.answer("❌ У вас нет активных заказов.", show_alert=True)
+        return
 
-            status_raw = order['repair_status']
-            status_display = REPAIR_STATUS_DISPLAY.get(status_raw, status_raw)
-            is_active = (status_raw == "wait" and order.get("complied") is True)
+    sent_message_ids = []
 
-            text = (
-                "📋 <b>Активный заказ</b>\n"
-                f"Результат: {'Работа выполнена' if order['complied'] else 'В работе'}\n\n"
-                f"🆔 ID заказа: {order['id']}\n"
-                f"👤 Мастер: {order['master_name']}\n"
-                f"🚗 Марка авто: {order.get('brand_auto') or '—'}\n"
-                f"📆 Год выпуска: {order.get('year_auto') or '—'}\n"
-                f"🔢 Гос. номер: {order.get('gos_num') or '—'}\n"
-                f"🔧 Статус: {status_display}\n"
-                f"📝 Описание:\n{order.get('description') or '—'}\n\n"
-                f"📅 Дата создания: {date_str}"
+    # Отправляем каждый заказ как НОВОЕ сообщение
+    for order in orders:
+        date_str = order.get("date", "не указана")
+        if isinstance(date_str, str) and "T" in date_str:
+            date_str = date_str.split("T")[0]
+
+        status_raw = order['repair_status']
+        status_display = REPAIR_STATUS_DISPLAY.get(status_raw, status_raw)
+        is_active = (status_raw == "wait" and order.get("complied") is True)
+
+        text = (
+            "📋 <b>Активный заказ</b>\n"
+            f"Результат: {'Работа выполнена' if order['complied'] else 'В работе'}\n\n"
+            f"🆔 ID заказа: {order['id']}\n"
+            f"👤 Мастер: {order['master_name']}\n"
+            f"🚗 Марка авто: {order.get('brand_auto') or '—'}\n"
+            f"📆 Год выпуска: {order.get('year_auto') or '—'}\n"
+            f"🔢 Гос. номер: {order.get('gos_num') or '—'}\n"
+            f"🔧 Статус: {status_display}\n"
+            f"📝 Описание:\n{order.get('description') or '—'}\n\n"
+            f"📅 Дата создания: {date_str}"
+        )
+
+        reply_markup = None
+        if is_active:
+            reply_markup = kb.get_accept_work_keyboard(
+                order_id=order["id"],
+                master_tg_id=order["tg_id_master"]
             )
 
-            reply_markup = None
+        msg = await call.message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+        sent_message_ids.append(msg.message_id)
 
-            if is_active:
-                reply_markup = kb.get_accept_work_keyboard(
-                    order_id=order["id"],
-                    master_tg_id=order["tg_id_master"]
-                )
+    # Отправляем кнопку "Назад" ПОД всеми заказами
+    back_msg = await call.message.answer(
+        "↩️ Вернуться в личный кабинет:",
+        reply_markup=kb.user_back_personal_account()
+    )
+    sent_message_ids.append(back_msg.message_id)
 
-            await call.message.answer(
-                text,
-                parse_mode="HTML",
-                reply_markup=reply_markup
-            )
+    # Сохраняем ID для удаления
+    await state.update_data(sent_order_messages=sent_message_ids)
+    await call.answer()
 
+
+# Удаляет текущие заказы, возвращает в личный кабинет
+@router.callback_query(F.data == "back_to_account")
+async def back_to_account_from_orders(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    message_ids = data.get("sent_order_messages", [])
+
+    # Удаляем все временные сообщения (заказы + кнопка "Назад")
+    for msg_id in message_ids:
+        await call.bot.delete_message(
+            chat_id=call.message.chat.id,
+            message_id=msg_id
+        )
+
+    await state.clear()
     await call.answer()
 
 
@@ -381,10 +421,11 @@ async def process_grade(call: CallbackQuery, state: FSMContext):
 # показываем тип записи
 @router.callback_query(F.data == "appointment")
 async def start_booking(call: CallbackQuery, state: FSMContext):
-    await call.message.answer(
-        "🔧 Выберите тип работ:",
-        reply_markup=kb.login_menu([3, 1, 2])
-    )
+    await call.message.edit_text(
+        text=f"{'⚙' * 16}\n"
+             f"📁 Записаться\n"
+             f"Выберите тип работ:",
+        reply_markup=kb.user_reg_repairs())
     await state.set_state(Booking.choosing_service)
     await call.answer()
 
@@ -486,7 +527,7 @@ async def confirm_booking(call: CallbackQuery, state: FSMContext):
             reply_markup=kb.staff_menu([3, 4, 5], user_id=user_id)
         )
 
-    await call.message.answer("✅ Заявка отправлена! Мастер свяжется с вами в ближайшее время.")
+    await call.answer("✅ Заявка отправлена! Мастер свяжется с вами в ближайшее время.", show_alert=True)
     await state.clear()
     await call.answer()
 
@@ -503,34 +544,85 @@ async def cancel_booking(call: CallbackQuery, state: FSMContext):
 # ==============================
 @router.callback_query(F.data == "send_message")
 async def initiate_support_message(call: CallbackQuery, state: FSMContext) -> None:
-    """Начинает процесс отправки сообщения всем мастерам и админам с can_mess=True."""
-    name = call.message.chat.first_name
-    await call.message.answer(
-        f"{name}, введите ваше сообщение (до 100 символов). Соблюдайте цензуру!"
+    """Начинает процесс отправки сообщения."""
+    name = call.from_user.first_name
+    # Сохраняем ID этого сообщения, чтобы потом его отредактировать
+    await state.update_data(prompt_message_id=call.message.message_id)
+    await call.message.edit_text(
+        text=f"{'⚙' * 16}\n"
+             f"📁 Задать вопрос\n"
+             f"{name}, введите ваше сообщение.\n"
+             f"Соблюдайте цензуру!",
+        reply_markup=kb.user_return_to_profile()
     )
     await state.set_state(Mess.mess_step)
+    await call.answer()
 
 
 @router.message(Mess.mess_step)
-async def forward_support_message(message: Message, state: FSMContext) -> None:
-    """
-    Формирует и пересылает сообщение от пользователя администраторам и мастерам,
-    которые могут получать уведомления (`can_mess=true`).
-    """
-    user_id = message.chat.id
-    message_text = message.text[:100]
+async def save_support_message(message: Message, state: FSMContext) -> None:
+    """Сохраняет текст и ЗАМЕНЯЕТ сообщение на подтверждение."""
+    if not message.text or not message.text.strip():
+        await message.answer("❌ Пожалуйста, введите непустое сообщение.")
+        return
 
+    user_id = message.from_user.id
     user_data = await get_user_dict(
         user_id, ("user_name", "rating", "brand_auto", "year_auto", "contact")
     )
 
     if not user_data:
-        await message.answer("❌ Произошла ошибка. Попробуйте позже.")
+        await message.answer("❌ Ошибка профиля. Попробуйте позже.")
+        await state.clear()
+        return
+
+    # Сохраняем НОВОЕ: ID сообщения пользователя
+    await state.update_data(
+        support_text=message.text[:100],
+        user_id=user_id,
+        user_data=user_data,
+        user_message_id=message.message_id  # ← сохраняем ID введенного текста
+    )
+
+    data = await state.get_data()
+    prompt_msg_id = data.get("prompt_message_id")
+
+    if prompt_msg_id:
+        await message.bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=prompt_msg_id,
+            text="Подтвердите отправку сообщения:",
+            reply_markup=kb.user_confirm_send_mess()
+        )
+        await state.set_state(Mess.confirm_step)
+    else:
+        # fallback
+        sent = await message.answer(
+            "Подтвердите отправку сообщения:",
+            reply_markup=kb.user_confirm_send_mess()
+        )
+        await state.update_data(prompt_message_id=sent.message_id)
+        await state.set_state(Mess.confirm_step)
+
+
+@router.callback_query(Mess.confirm_step, F.data == "confirm_support_msg")
+async def confirm_support_message(call: CallbackQuery, state: FSMContext) -> None:
+    """Отправляет сообщение мастерам и показывает alert."""
+    data = await state.get_data()
+    message_text = data.get("support_text")
+    user_id = data.get("user_id")
+    user_data = data.get("user_data")
+    prompt_msg_id = data.get("prompt_message_id")
+    user_msg_id = data.get("user_message_id")
+
+    if not message_text or not user_data:
+        await call.answer("❌ Данные утеряны. Начните заново.", show_alert=True)
         await state.clear()
         return
 
     user_name, rating, brand_auto, year_auto, contact = user_data
 
+    # Формируем сообщение для мастеров
     formatted_message = (
         f"👤 Имя: {user_name}\n"
         f"⭐️ Рейтинг: {rating}\n"
@@ -541,118 +633,65 @@ async def forward_support_message(message: Message, state: FSMContext) -> None:
         f"📨 Сообщение:\n{message_text}"
     )
 
-    admin_ids = await can_mess_true()
-    await state.update_data(tg_id=user_id, user_name=user_name)
-
-    # Отправляет всем администраторам и мастерам у которых can_mess=True
-    for admin_id in admin_ids:
+    # Отправляем мастерам
+    masters = await can_mess_true()
+    for master_id in masters:
         await bot.send_message(
-            chat_id=admin_id,
+            chat_id=master_id,
             text=formatted_message,
             reply_markup=kb.staff_menu([1, 2, 3, 4, 5], user_id=user_id)
         )
 
-    await message.answer("Ваше сообщение отправлено! Ожидайте ответа...")
-    await state.clear()
-
-
-# ОТВЕТ НА СООБЩЕНИЕ ОТ МАСТЕРА
-@router.callback_query(F.data.startswith("send_answer:"))
-async def handle_send_answer_button(call: CallbackQuery, state: FSMContext):
-    parts = call.data.split(":")
-    if len(parts) != 3:
-        await call.answer("❌ Неверный формат данных", show_alert=True)
-        return
-
-    try:
-        client_tg_id = int(parts[1])
-        master_tg_id = int(parts[2])
-    except ValueError:
-        await call.answer("❌ Некорректный ID", show_alert=True)
-        return
-
-    # Проверка: текущий пользователь — это client_tg_id?
-    if call.from_user.id != client_tg_id:
-        await call.answer("❌ Эта кнопка не для вас", show_alert=True)
-        return
-
-    # Сохраняем ID мастера, которому отправим ответ
-    await state.update_data(target_master_id=master_tg_id)
-
-    await call.message.answer("✍️ Введите ваш ответ:")
-    await state.set_state(ClientReply.waiting_for_reply_text)
-    await call.answer()  # убираем анимацию загрузки
-
-
-@router.message(ClientReply.waiting_for_reply_text)
-async def process_client_reply(message: Message, state: FSMContext):
-    data = await state.get_data()
-    master_tg_id = data.get("target_master_id")
-    if not master_tg_id:
-        await message.answer("❌ Ошибка: получатель не указан.")
-        await state.clear()
-        return
-
-    client_tg_id = message.from_user.id
-    client_name, brand_auto = await get_user_dict(client_tg_id, ("user_name", "brand_auto"))
-
-    await message.bot.send_message(
-        chat_id=master_tg_id,
-        text=(
-            f"📨 Ответ от клиента\n"
-            f"📱 tg_id: {client_tg_id}\n"
-            f"👤 Имя: {client_name} \n"
-            f"🚗 Марка авто: {brand_auto}\n\n"
-            f"{message.text}"
+    # ✅ УДАЛЯЕМ сообщение пользователя (его текст вопроса)
+    if user_msg_id:
+        await call.bot.delete_message(
+            chat_id=call.message.chat.id,
+            message_id=user_msg_id
         )
+
+    # ✅ Показываем alert
+    await call.answer("✅ Ваше сообщение отправлено!\nОжидайте ответа.", show_alert=True)
+
+    # 🔁 Возвращаемся в личный кабинет в том же сообщении
+    await call.bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=prompt_msg_id,
+        text=f"{'⚙' * 16}\n"
+             f"📁 Личный кабинет:\nВыберите действие:",
+        reply_markup=kb.user_personal_account()
     )
-    await message.answer("✅ Ваше сообщение отправлено мастеру!")
 
     await state.clear()
 
 
-# ЗАЯВКА НА РЕМОНТ ОТ КЛИЕНТА (ДЛЯ БЫСТРОГО ВЗАИМОДЕЙСТВИЯ С МАСТЕРОМ)
-@router.callback_query(F.data.startswith("send_repair_req:"))
-async def handle_send_repair_request(call: CallbackQuery):
-    parts = call.data.split(":")
-    if len(parts) != 3:
-        await call.answer("❌ Ошибка запроса", show_alert=True)
-        return
+@router.callback_query(Mess.confirm_step, F.data == "cancel_support_msg")
+async def cancel_support_message(call: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    prompt_msg_id = data.get("prompt_message_id")
+    user_msg_id = data.get("user_message_id")
 
-    try:
-        client_tg_id = int(parts[1])
-        master_tg_id = int(parts[2])
-    except ValueError:
-        await call.answer("❌ Некорректные данные", show_alert=True)
-        return
+    await call.answer("❌ Отправка отменена.", show_alert=True)
 
-    # Проверяем, что клиент существует
-    client_data = await get_user_dict(client_tg_id)
-    if not client_data:
-        await call.answer("❌ Клиент не найден", show_alert=True)
-        return
+    # Удаляем сообщение пользователя
+    if user_msg_id:
+        await call.bot.delete_message(call.message.chat.id, user_msg_id)
 
-    # Отправляем мастеру сообщение с кнопкой создания заказа
-    await bot.send_message(
-        chat_id=master_tg_id,
-        text=(
-            f"🔹 ЗАЯВКА НА РЕМОНТ 🔹\n\n"
-            f"👤 Имя: {client_data['user_name']}\n"
-            f"🚗 Марка авто: {client_data['brand_auto']} \n"
-            f"📆 Год выпуска: {client_data['year_auto']}\n"
-            f"ℹ️ VIN: {client_data['vin_number']}\n"
-            f"🔢 Гос. номер: {client_data['gos_num']}\n"
-            f"📱 Телеграм: {client_tg_id}\n"
-            f"📞 Сот. тел.: {client_data['contact']}\n\n"
-            f"Выберите тип работ или введите текстом:"
-        ),
-        reply_markup=kb.action_buttons_orders_menu([1, 2, 3, 4, 5], client_tg_id, master_tg_id)
-    )
-
-    # Убираем кнопку у клиента
-    await call.message.edit_reply_markup(reply_markup=None)
-    await call.message.answer("✅ Заявка отправлена мастеру!")
-    await call.answer()
+    # 🔁 Возвращаемся в личный кабинет
+    if prompt_msg_id:
+        await call.bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=prompt_msg_id,
+            text=f"{'⚙' * 16}\n"
+                 f"📁 Личный кабинет:\nВыберите действие:",
+            reply_markup=kb.user_personal_account()
+        )
+    else:
+        await call.message.edit_text(
+            text=f"{'⚙' * 16}\n"
+                 f"📁 Личный кабинет:\nВыберите действие:",
+            reply_markup=kb.user_personal_account()
+        )
+    await state.clear()
 
 
 # ==============================
@@ -661,38 +700,137 @@ async def handle_send_repair_request(call: CallbackQuery):
 @router.callback_query(F.data == "create_comment")
 async def start_comment(call: CallbackQuery, state: FSMContext) -> None:
     """Начинает процесс оставления отзыва."""
-    await call.message.edit_reply_markup(reply_markup=None)
-    name = call.message.chat.first_name
-    await call.message.answer(f"<b>{name}, напишите свой отзыв о СТО.</b>")
-    await state.set_state(Send.send_text)
+    name = call.from_user.first_name
+
+    # Сохраняем ID сообщения для последующего редактирования и возврата
+    await state.update_data(prompt_message_id=call.message.message_id)
+
+    await call.message.edit_text(
+        text=f"{'⚙' * 16}\n"
+             f"📁 Написать отзыв\n"
+             f"{name}, напишите свой отзыв об СТО.",
+        reply_markup=kb.user_return_to_profile()  # кнопка "Назад" в личный кабинет
+    )
+    await state.set_state(Send_feedback.send_text)
+    await call.answer()
 
 
-@router.message(Send.send_text)
-async def save_comment(message: Message, state: FSMContext) -> None:
-    """Сохраняет отзыв в базу данных."""
+@router.message(Send_feedback.send_text)
+async def save_comment_text(message: Message, state: FSMContext) -> None:
+    """Сохраняет текст отзыва и предлагает подтвердить."""
+    if not message.text or not message.text.strip():
+        await message.answer("❌ Отзыв не может быть пустым.")
+        return
+
+    # Сохраняем данные, включая ID сообщения пользователя
     await state.update_data(
-        mess_id=message.message_id,
+        user_message_id=message.message_id,
         user_id=message.from_user.id,
         user_name=message.from_user.full_name,
-        send_text=message.text
+        send_text=message.text[:128]  # ограничение по модели Comments
     )
-    data = await state.get_data()
 
-    await add_comment({
-        "tg_id": data["user_id"],
-        "user_name": data["user_name"],
-        "text": data["send_text"]
+    data = await state.get_data()
+    prompt_msg_id = data.get("prompt_message_id")
+
+    if prompt_msg_id:
+        # Редактируем исходное сообщение на "Подтвердите..."
+        await message.bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=prompt_msg_id,
+            text="❓ Подтвердите отправку отзыва:",
+            reply_markup=kb.user_confirm_send_comment()
+        )
+        await state.set_state(Send_feedback.confirm)
+    else:
+        # fallback (маловероятно)
+        sent = await message.answer(
+            "❓ Подтвердите отправку отзыва:",
+            reply_markup=kb.user_confirm_send_comment()
+        )
+        await state.update_data(prompt_message_id=sent.message_id)
+        await state.set_state(Send_feedback.confirm)
+
+
+@router.callback_query(Send_feedback.confirm, F.data == "confirm_comment")
+async def confirm_comment(call: CallbackQuery, state: FSMContext) -> None:
+    """Сохраняет отзыв и завершает процесс."""
+    data = await state.get_data()
+    send_text = data.get("send_text")
+    user_id = data.get("user_id")
+    user_name = data.get("user_name")
+    prompt_msg_id = data.get("prompt_message_id")
+    user_msg_id = data.get("user_message_id")
+
+    if not send_text or not user_id or not user_name:
+        await call.answer("❌ Данные утеряны. Попробуйте снова.", show_alert=True)
+        await state.clear()
+        return
+
+    # Сохраняем отзыв в БД
+    comment_id = await add_comment({
+        "tg_id": user_id,
+        "user_name": user_name,
+        "text": send_text
     })
 
-    await message.answer(f"ID отзыва: {data['mess_id']}\nСпасибо за ваш отзыв!")
+    await call.bot.delete_message(call.message.chat.id, user_msg_id)
+
+    # Показываем alert с ID отзыва
+    await call.answer(f"✅ Спасибо за ваш отзыв!\nID отзыва: {comment_id}", show_alert=True)
+
+    # Возвращаемся в личный кабинет
+    if prompt_msg_id:
+        await call.bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=prompt_msg_id,
+            text=f"{'⚙' * 16}\n"
+                 f"📁 Личный кабинет:\nВыберите действие:",
+            reply_markup=kb.user_personal_account()
+        )
+    else:
+        await call.message.edit_text(
+            text=f"{'⚙' * 16}\n"
+                 f"📁 Личный кабинет:\nВыберите действие:",
+            reply_markup=kb.user_personal_account()
+        )
+    await state.clear()
+
+
+@router.callback_query(Send_feedback.confirm, F.data == "cancel_comment")
+async def cancel_comment(call: CallbackQuery, state: FSMContext) -> None:
+    """Отменяет отправку отзыва."""
+    data = await state.get_data()
+    prompt_msg_id = data.get("prompt_message_id")
+    user_msg_id = data.get("user_message_id")
+
+    # Удаляем сообщение пользователя (если было)
+    if user_msg_id:
+        await call.bot.delete_message(call.message.chat.id, user_msg_id)
+
+    # Возвращаемся в личный кабинет
+    if prompt_msg_id:
+        await call.bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=prompt_msg_id,
+            text=f"{'⚙' * 16}\n"
+                 f"📁 Личный кабинет:\nВыберите действие:",
+            reply_markup=kb.user_personal_account()
+        )
+    else:
+        await call.message.edit_text(
+            text=f"{'⚙' * 16}\n"
+                 f"📁 Личный кабинет:\nВыберите действие:",
+            reply_markup=kb.user_personal_account()
+        )
+
+    await call.answer("❌ Отзыв не отправлен.", show_alert=True)
     await state.clear()
 
 
 # ==============================
 # ПОСТАВИТЬ ОЦЕНКУ МАСТЕРУ
 # ==============================
-
-
 @router.callback_query(F.data == "cancel")
 async def cancel_fsm(call: CallbackQuery, state: FSMContext) -> None:
     """Отменяет текущее FSM-состояние и удаляет сообщение с клавиатурой."""
@@ -706,26 +844,34 @@ async def cancel_fsm(call: CallbackQuery, state: FSMContext) -> None:
 # ==============================
 @router.callback_query(F.data == "login")
 async def show_user_data(call: CallbackQuery) -> None:
-    """Показывает текущие данные пользователя из базы."""
-    user_id = call.message.chat.id
+    user_id = call.from_user.id
     reg_user = await get_user_dict(
         user_id,
         ("user_name", "rating", "brand_auto", "year_auto", "gos_num", "vin_number", "contact")
     )
 
-    await call.message.answer(
-        "Ваши регистрационные данные и информация об авто:"
+    text = (
+        "Ваши регистрационные данные и информация об авто:\n\n"
+        f"👤 Имя: {reg_user[0]}\n"
+        f"⭐ Рейтинг: {reg_user[1]}\n"
+        f"🚗 Марка авто: {reg_user[2] or '—'}\n"
+        f"📆 Год выпуска: {reg_user[3] or '—'}\n"
+        f"🔢 Гос. номер: {reg_user[4] or '—'}\n"
+        f"🆔 VIN номер: {reg_user[5] or '—'}\n"
+        f"📞 Контактный номер: {reg_user[6] or '—'}"
     )
-    await call.message.answer(
-        f"Имя: {reg_user[0]}\n"
-        f"Рейтинг: {reg_user[1]}\n"
-        f"Марка авто: {reg_user[2]}\n"
-        f"Год выпуска: {reg_user[3]}\n"
-        f"Гос. номер: {reg_user[4]}\n"
-        f"VIN номер: {reg_user[5]}\n"
-        f"Контактный номер: {reg_user[6]}",
-        reply_markup=kb.login_menu([12])
-    )
+
+    try:
+        await call.message.edit_text(
+            text=text,
+            reply_markup=kb.user_edit_profile()
+        )
+    except Exception as e:
+        # Логируем ошибку
+        print(f"Ошибка при редактировании: {e}")
+        await call.answer("⚠️ Не удалось загрузить данные.", show_alert=True)
+
+    await call.answer()
 
 
 # ==============================
@@ -791,26 +937,53 @@ async def about_service(call: CallbackQuery) -> None:
         "не ярок свет!? Найдём ответ — решим проблему.\n"
         "Езжай в компанию РАССВЕТ!</i>"
     )
-    await call.message.answer_photo(photo=info_img, caption=caption, reply_markup=kb.keyboard7)
+    await call.message.answer_photo(photo=info_img, caption=caption, reply_markup=kb.comment_menu())
 
 
 # ПОКАЗАТЬ ОТЗЫВЫ КЛИЕНТОВ
 @router.callback_query(F.data == "comment")
-async def show_comments(call: CallbackQuery) -> None:
-    """Показывает отзывы (заглушка — функционал не реализован)."""
-    await call.message.answer("Вот отзывы пользователей... (в разработке)")
+async def show_comments(call: CallbackQuery):
+    comments = await get_visible_comments(mode="user")
+
+    if not comments:
+        text = "Отзывов пока нет."
+    else:
+        # Собираем все отзывы в один текст
+        parts = []
+        for c in comments:
+            date_str = c['date'].split('T')[0] if 'T' in c['date'] else c['date']
+            parts.append(
+                f"⭐ <b>{c['user_name']}</b>:\n{c['text']}\n\n📅 {date_str}"
+            )
+        text = "\n\n".join(parts)
+
+    # Отправляем одним сообщением с кнопкой "Назад"
+    await call.message.answer(
+        text,
+        parse_mode="HTML",
+        reply_markup=kb.login_menu([6])
+    )
+    await call.answer()
 
 
 # ПОКАЗАТЬ ПРАЙС ЦЕН
 @router.callback_query(F.data == "price")
 async def show_price_list(call: CallbackQuery) -> None:
     """Отправляет ориентировочный прайс из файла."""
-    await call.message.answer(
-        "❗️ Прайс является ориентировочным и может отличаться от фактической цены!\n"
-        "❗️ Обговаривайте стоимость с мастером перед началом работ!"
-    )
     with open("info/price.txt", "r", encoding="utf-8") as f:
-        await call.message.answer(f.read())
+        text = f.read()
+    await call.message.answer(text, reply_markup=kb.login_menu([6]))
+    await call.answer()
+
+
+# FAQ
+@router.callback_query(F.data == "faq")
+async def faq_service(call: CallbackQuery) -> None:
+    with open("info/FAQ.txt", "r", encoding="utf-8") as f:
+        text = f.read()
+
+    await call.message.answer(text, reply_markup=kb.login_menu([6]))
+    await call.answer()
 
 
 # ПОКАЗАТЬ КОНТАКТНУЮ ИНФОРМАЦИЮ
@@ -819,8 +992,108 @@ async def show_contacts(call: CallbackQuery) -> None:
     """Отправляет контактную информацию и карту."""
     maps_img = FSInputFile("img/maps.jpg")
     caption = (
-        "🏢 <b>СТО ЗАО Рассвет:</b> г. Омск, ул. 1-я Казахстанская, 81\n\n"
-        "📞 <b>Телефон:</b> +79999999999\n\n"
-        "📧 <b>Email:</b> sto@mail.ru"
+        f"🏢 <b>СТО ЗАО Рассвет:</b> {config.OFFICE_ADDRESS}\n\n"
+        f"📞 <b>Телефон:</b> {config.SUPPORT_PHONE}\n\n"
+        f"📧 <b>Email:</b> {config.SUPPORT_EMAIL}"
     )
-    await call.message.answer_photo(photo=maps_img, caption=caption, reply_markup=kb.keyboard5)
+    await call.message.answer_photo(photo=maps_img, caption=caption, reply_markup=kb.location_menu())
+
+
+# ЗАЯВКА НА РЕМОНТ ОТ КЛИЕНТА (ДЛЯ БЫСТРОГО ВЗАИМОДЕЙСТВИЯ С МАСТЕРОМ)
+@router.callback_query(F.data.startswith("send_repair_req:"))
+async def handle_send_repair_request(call: CallbackQuery):
+    parts = call.data.split(":")
+    if len(parts) != 3:
+        await call.answer("❌ Ошибка запроса", show_alert=True)
+        return
+
+    try:
+        client_tg_id = int(parts[1])
+        master_tg_id = int(parts[2])
+    except ValueError:
+        await call.answer("❌ Некорректные данные", show_alert=True)
+        return
+
+    # Проверяем, что клиент существует
+    client_data = await get_user_dict(client_tg_id)
+    if not client_data:
+        await call.answer("❌ Клиент не найден", show_alert=True)
+        return
+
+    # Отправляем мастеру сообщение с кнопкой создания заказа
+    await bot.send_message(
+        chat_id=master_tg_id,
+        text=(
+            f"🔹 ЗАЯВКА НА РЕМОНТ 🔹\n\n"
+            f"👤 Имя: {client_data['user_name']}\n"
+            f"🚗 Марка авто: {client_data['brand_auto']} \n"
+            f"📆 Год выпуска: {client_data['year_auto']}\n"
+            f"ℹ️ VIN: {client_data['vin_number']}\n"
+            f"🔢 Гос. номер: {client_data['gos_num']}\n"
+            f"📱 Телеграм: {client_tg_id}\n"
+            f"📞 Сот. тел.: {client_data['contact']}\n\n"
+            f"Выберите тип работ или введите текстом:"
+        ),
+        reply_markup=kb.action_buttons_orders_menu([1, 2, 3, 4, 5], client_tg_id, master_tg_id)
+    )
+
+    # Убираем кнопку у клиента
+    await call.message.edit_reply_markup(reply_markup=None)
+    await call.message.answer("✅ Заявка отправлена мастеру!")
+    await call.answer()
+
+
+# ОТВЕТ НА СООБЩЕНИЕ ОТ МАСТЕРА
+@router.callback_query(F.data.startswith("send_answer:"))
+async def handle_send_answer_button(call: CallbackQuery, state: FSMContext):
+    parts = call.data.split(":")
+    if len(parts) != 3:
+        await call.answer("❌ Неверный формат данных", show_alert=True)
+        return
+
+    try:
+        client_tg_id = int(parts[1])
+        master_tg_id = int(parts[2])
+    except ValueError:
+        await call.answer("❌ Некорректный ID", show_alert=True)
+        return
+
+    # Проверка: текущий пользователь — это client_tg_id?
+    if call.from_user.id != client_tg_id:
+        await call.answer("❌ Эта кнопка не для вас", show_alert=True)
+        return
+
+    # Сохраняем ID мастера, которому отправим ответ
+    await state.update_data(target_master_id=master_tg_id)
+
+    await call.message.answer("✍️ Введите ваш ответ:")
+    await state.set_state(ClientReply.waiting_for_reply_text)
+    await call.answer()  # убираем анимацию загрузки
+
+
+@router.message(ClientReply.waiting_for_reply_text)
+async def process_client_reply(message: Message, state: FSMContext):
+    data = await state.get_data()
+    master_tg_id = data.get("target_master_id")
+    if not master_tg_id:
+        await message.answer("❌ Ошибка: получатель не указан.")
+        await state.clear()
+        return
+
+    client_tg_id = message.from_user.id
+    client_name, brand_auto = await get_user_dict(client_tg_id, ("user_name", "brand_auto"))
+
+    await message.bot.send_message(
+        chat_id=master_tg_id,
+        text=(
+            f"📨 Ответ от клиента\n"
+            f"📱 tg_id: {client_tg_id}\n"
+            f"👤 Имя: {client_name} \n"
+            f"🚗 Марка авто: {brand_auto}\n\n"
+            f"{message.text}"
+        )
+    )
+    await message.answer("✅ Ваше сообщение отправлено мастеру!")
+
+    await state.clear()
+
