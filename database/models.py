@@ -63,7 +63,7 @@ class Orders(Base):
     master_contact: Mapped[str] = mapped_column(String(20), nullable=True, comment="Контактный телефон мастера")
     repair_status: Mapped[str] = mapped_column(String(20), comment="in_work/wait/close")
     date: Mapped[datetime] = mapped_column(DateTime, default=current_time, comment="Дата создания заказа")
-    complied: Mapped[bool] = mapped_column(Boolean(), default=False, comment="True = закрыт клиентом")
+    complied: Mapped[bool] = mapped_column(Boolean(), default=False, comment="True = Заказ выполнен")
 
 
 class Appointment(Base):

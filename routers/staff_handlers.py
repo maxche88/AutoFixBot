@@ -3,14 +3,19 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from database.requests import (get_user_dict, get_available_hours, create_appointment, get_active_order_id, add_order,
-                               get_orders_by_user, update_order)
+                               get_orders_by_user, update_order, delete_order, get_all_masters)
 from bot import bot
+import asyncio
+from aiogram.exceptions import TelegramAPIError
 from keybords import keybords as kb
 from datetime import date, timedelta
+import logging
 
 
 # Создаём отдельный роутер для обработки действий персонала (админов и мастеров)
 router = Router()
+
+logger = logging.getLogger(__name__)
 
 
 # Состояния FSM, необходимые для многошаговых сценариев персонала
@@ -40,6 +45,14 @@ class MasterOrderActions(StatesGroup):
     waiting_for_message = State()  # ожидание текста от мастера
 
 
+class MasterTransfer(StatesGroup):
+    choosing_recipient = State()  # выбор получателя
+
+
+class MasterEditDescription(StatesGroup):
+    waiting_for_description = State()  # выбор получателя
+
+
 REPAIR_STATUS_DISPLAY = {
     "in_work": "В работе",
     "wait": "Ожидание",
@@ -61,7 +74,7 @@ async def master_current_orders(call: CallbackQuery, state: FSMContext):
     orders = await get_orders_by_user(tg_id_master=master_id, active=True)
 
     if not orders:
-        await call.message.answer("❌ Нет активных заказов. ❌")
+        await call.answer("❌ У вас нет активных заказов.", show_alert=True)
     else:
         for order in orders:
             date_str = order.get("date", "не указана")
@@ -91,7 +104,7 @@ async def master_current_orders(call: CallbackQuery, state: FSMContext):
             await call.message.answer(
                 text,
                 parse_mode="HTML",
-                reply_markup=kb.master_order_action_menu([1, 2, 3, 4, 5, 6, 8], order_id, tg_id_user)
+                reply_markup=kb.master_order_action_menu([1, 2, 3, 4, 5, 6, 7, 8], order_id, tg_id_user)
             )
 
     await call.answer()
@@ -99,7 +112,7 @@ async def master_current_orders(call: CallbackQuery, state: FSMContext):
 
 # ВЫБОР ВЫПОЛНЕНО
 # Роутер: обрабатывает complied_order:order_id:client_tg_id
-@router.callback_query(F.data.startswith("complied_order:"))
+@router.callback_query(F.data.startswith("comp_odr:"))
 async def handle_complied_order(call: CallbackQuery, state: FSMContext):
     parts = call.data.split(":")
     if len(parts) != 3:
@@ -144,7 +157,11 @@ async def send_quick_pickup(call: CallbackQuery, state: FSMContext):
     master_name, = await get_user_dict(master_tg_id, ("user_name",))
 
     # Обновляем заказ: статус = wait, complied = True
-    await update_order(order_id, "wait", complied=True)
+    await update_order(
+        order_id=order_id,
+        repair_status="wait",
+        complied=True
+    )
 
     # Отправляем клиенту
     await bot.send_message(
@@ -179,7 +196,11 @@ async def send_custom_message_to_client(message: Message, state: FSMContext):
     master_name, = await get_user_dict(master_tg_id, ("user_name",))
 
     # Обновляем статус заказа
-    await update_order(order_id, "wait", complied=True)
+    await update_order(
+        order_id=order_id,
+        repair_status="wait",
+        complied=True
+    )
 
     # Отправляем сообщение клиенту
     await bot.send_message(
@@ -190,6 +211,249 @@ async def send_custom_message_to_client(message: Message, state: FSMContext):
     )
 
     await message.answer("✅ Ваше сообщение отправлено клиенту.")
+    await state.clear()
+
+
+# === ИЗМЕНИТЬ СТАТУС ===
+@router.callback_query(F.data.startswith("ed_st:"))
+async def edit_status(call: CallbackQuery):
+    try:
+        order_id = int(call.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await call.answer("❌ Некорректный ID заказа.", show_alert=True)
+        return
+
+    # Обновляем статус заказа
+    await update_order(
+        order_id=order_id,
+        repair_status="wait"
+    )
+
+    await call.answer(f"✅ Статус изменён на wait!")
+
+
+# === ИЗМЕНИТЬ ОПИСАНИЕ ===
+@router.callback_query(F.data.startswith("ed_des:"))
+async def edit_description(call: CallbackQuery, state: FSMContext):
+    try:
+        order_id = int(call.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await call.answer("❌ Некорректный ID заказа.", show_alert=True)
+        return
+
+    await state.update_data(order_id=order_id)
+
+    # Отправляем НОВОЕ СООБЩЕНИЕ и сохраняем его ID
+    prompt_msg = await call.message.answer(
+        "📋 Редактирование описания\n\n✍️ Введите новое описание заказа в чат:"
+    )
+    await state.update_data(prompt_message_id=prompt_msg.message_id)
+
+    await state.set_state(MasterEditDescription.waiting_for_description)
+    await call.answer()
+
+
+@router.message(MasterEditDescription.waiting_for_description)
+async def process_new_description(message: Message, state: FSMContext):
+    new_description = message.text.strip()
+
+    # Удаляем сообщение пользователя сразу
+    try:
+        await message.delete()
+    except TelegramAPIError:
+        pass
+
+    if not new_description:
+        # Удаляем старый запрос (если есть)
+        data = await state.get_data()
+        old_prompt_id = data.get("prompt_message_id")
+        if old_prompt_id:
+            try:
+                await message.bot.delete_message(message.chat.id, old_prompt_id)
+            except TelegramAPIError:
+                pass
+
+        # Отправляем новый запрос
+        prompt_msg = await message.answer("❌ Описание не может быть пустым. Введите снова:")
+        await state.update_data(prompt_message_id=prompt_msg.message_id)
+        return
+
+    data = await state.get_data()
+    order_id = data.get("order_id")
+    prompt_msg_id = data.get("prompt_message_id")
+
+    if not order_id:
+        await message.answer("❌ Ошибка: заказ не найден.")
+        await state.clear()
+        return
+
+    success = await update_order(order_id=order_id, description=new_description)
+
+    # Удаляем запрос ("Введите описание")
+    if prompt_msg_id:
+        try:
+            await message.bot.delete_message(message.chat.id, prompt_msg_id)
+        except TelegramAPIError:
+            pass
+
+    # Подтверждение
+    confirm = await message.answer("✅ Описание обновлено!" if success else "❌ Ошибка обновления.")
+
+    await asyncio.sleep(2)
+
+    try:
+        await confirm.delete()
+    except TelegramAPIError:
+        pass
+
+    await state.clear()
+
+
+# === ЗАКРЫТЬ ЗАКАЗ ===
+@router.callback_query(F.data.startswith("cl_odr:"))
+async def close_order(call: CallbackQuery):
+    try:
+        order_id = int(call.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await call.answer("❌ Некорректный ID заказа.", show_alert=True)
+        return
+
+    # Обновляем статус заказа на "close"
+    success = await update_order(order_id=order_id, repair_status="close", complied=True)
+
+    if success:
+        await call.answer("✅ Заказ успешно закрыт!", show_alert=True)
+    else:
+        await call.answer("❌ Не удалось закрыть заказ.", show_alert=True)
+
+
+# === ПЕРЕДАТЬ ЗАКАЗ ===
+@router.callback_query(F.data.startswith("tr_odr:"))
+async def start_transfer_order(call: CallbackQuery, state: FSMContext):
+    try:
+        order_id = int(call.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await call.answer("❌ Некорректный ID заказа.", show_alert=True)
+        return
+
+    current_master_id = call.from_user.id
+
+    # Получаем список мастеров (без текущего)
+    masters = await get_all_masters(exclude_tg_id=current_master_id)
+    if not masters:
+        await call.answer("❌ Нет доступных мастеров для передачи.", show_alert=True)
+        await state.clear()
+        return
+
+    # Сохраняем данные мастеров в состоянии (чтобы не дёргать БД при выборе)
+    await state.update_data(
+        order_id=order_id,
+        current_master_id=current_master_id,
+        available_masters=masters  # сохраняем список
+    )
+
+    # Генерируем клавиатуру
+    keyboard = kb.transfer_master_keyboard(masters)
+    await call.message.answer(
+        "👤 Выберите мастера, которому передать заказ:",
+        reply_markup=keyboard
+    )
+    await state.set_state(MasterTransfer.choosing_recipient)
+    await call.answer()
+
+
+# УДАЛИТЬ ЗАКАЗ delete_order
+@router.callback_query(F.data.startswith("del_odr:"))
+async def handle_delete_order(call: CallbackQuery):
+    try:
+        order_id = int(call.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await call.answer("❌ Некорректный ID заказа.", show_alert=True)
+        return
+
+    # Удаляем заказ из БД
+    success = await delete_order(order_id)
+
+    if not success:
+        await call.answer("❌ Заказ не найден или уже удалён.", show_alert=True)
+        return
+
+    # Показываем подтверждение
+    await call.answer("✅ Заказ успешно удалён.", show_alert=True)
+
+    # Удаляем сообщение с кнопкой "Удалить заказ"
+    try:
+        await call.message.delete()
+    except TelegramAPIError as e:
+        logger.debug(f"Не удалось удалить сообщение при удалении заказа {order_id}: {e}")
+
+
+# ВОЗВРАТ В ТЕКУЩИЙ resume_order
+@router.callback_query(F.data.startswith("res_odr:"))
+async def handle_resume_order(call: CallbackQuery):
+    try:
+        # Извлекаем order_id из callback_data
+        order_id = int(call.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await call.answer("❌ Некорректный ID заказа.", show_alert=True)
+        return
+
+    # Обновляем заказ: возвращаем в работу
+    success = await update_order(
+        order_id=order_id,
+        repair_status="in_work",
+        complied=False
+    )
+
+    if not success:
+        await call.answer("❌ Не удалось обновить заказ. Возможно, он не найден.", show_alert=True)
+        return
+
+    # Отправляем подтверждение
+    await call.answer("✅ Заказ возвращён в работу.", show_alert=True)
+
+
+@router.callback_query(MasterTransfer.choosing_recipient, F.data.startswith("select_master:"))
+async def select_recipient_master(call: CallbackQuery, state: FSMContext):
+    try:
+        new_master_tg_id = int(call.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await call.answer("❌ Некорректный ID мастера.", show_alert=True)
+        return
+
+    data = await state.get_data()
+    order_id = data.get("order_id")
+    available_masters = data.get("available_masters", [])
+
+    # Находим выбранного мастера по tg_id
+    selected_master = None
+
+    for master in available_masters:
+        if master["tg_id"] == new_master_tg_id:
+            selected_master = master
+            break
+
+    if not selected_master:
+        await call.answer("❌ Выбранный мастер недоступен.", show_alert=True)
+        return
+
+    # Обновляем заказ
+    success = await update_order(
+        order_id=order_id,
+        tg_id_master=selected_master["tg_id"],
+        master_name=selected_master["user_name"],
+        master_contact=selected_master["contact"]
+    )
+
+    if not success:
+        await call.message.answer("❌ Не удалось обновить заказ.")
+        await state.clear()
+        await call.answer()
+        return
+
+    # Удаляем клавиатуру и показываем подтверждение
+    await call.answer("✅ Заказ успешно передан другому мастеру!", show_alert=True)
+    await call.message.delete()
     await state.clear()
 
 
@@ -236,6 +500,28 @@ async def handle_call_action(call: CallbackQuery):
 
     await bot.send_message(chat_id=user_id, text=response_text, parse_mode="HTML")
     await call.message.answer("✅ Ответ «Звоните» отправлен пользователю.")
+    await call.answer()
+
+
+# === УТОЧНИТЬ УДОБНОЕ ВРЕМЯ ===
+@router.callback_query(F.data.startswith("check_time:"))
+async def handle_check_time_action(call: CallbackQuery):
+
+    # Извлекаем tg_id клиента
+    client_tg_id = int(call.data.split(":", 1)[1])
+    master_tg_id = call.from_user.id  # ID мастера — он нажал кнопку
+    master_name, = await get_user_dict(master_tg_id, ("user_name",))
+
+    # Отправляем клиенту сообщение с уточнением
+    await bot.send_message(
+        chat_id=client_tg_id,
+        text=f"{master_name}:\n"
+             "Напишите удобное время и дату для того чтобы я вас записал!",
+        reply_markup=kb.action_buttons_orders_menu([8, 10], client_tg_id, master_tg_id)
+    )
+
+    # Подтверждаем мастеру
+    await call.message.answer("✅ Уточняющий вопрос по времени отправлен клиенту.")
     await call.answer()
 
 
@@ -605,7 +891,7 @@ async def send_custom_reply(message: Message, state: FSMContext):
     await bot.send_message(
         chat_id=user_id,
         text=f"{master_name}:\n{message.text}",
-        reply_markup=kb.action_buttons_orders_menu([8], user_id, master_id)
+        reply_markup=kb.action_buttons_orders_menu([8, 10], user_id, master_id)
     )
 
     # Подтверждаем, что сообщение отправлено

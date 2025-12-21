@@ -1,5 +1,6 @@
 # This Python file uses the following encoding: utf-8
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from typing import List, Dict
 from datetime import date, datetime
 from config import config
 
@@ -191,16 +192,15 @@ def rating_keyboard():
     Возвращает inline-клавиатуру с кнопками оценки от 1 до 5.
     Каждая кнопка отправляет callback_data вида 'grade:N'.
     """
-    kb_list = [
+    return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text='1️⃣', callback_data='grade:1'),
-            InlineKeyboardButton(text='2️⃣', callback_data='grade:2'),
-            InlineKeyboardButton(text='3️⃣', callback_data='grade:3'),
-            InlineKeyboardButton(text='4️⃣', callback_data='grade:4'),
-            InlineKeyboardButton(text='5️⃣', callback_data='grade:5')
+            InlineKeyboardButton(text="1 ⭐", callback_data="grade:1"),
+            InlineKeyboardButton(text="2 ⭐", callback_data="grade:2"),
+            InlineKeyboardButton(text="3 ⭐", callback_data="grade:3"),
+            InlineKeyboardButton(text="4 ⭐", callback_data="grade:4"),
+            InlineKeyboardButton(text="5 ⭐", callback_data="grade:5"),
         ]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=kb_list)
+    ])
 
 
 def admin_menu():
@@ -234,18 +234,40 @@ def master_order_action_menu(index: list, order_id: int = None, tg_id: int = Non
     :return: InlineKeyboardMarkup
     """
     buttons_dict = {
-        1: InlineKeyboardButton(text="🔸 ВЫПОЛНЕНО 🔸", callback_data=f"complied_order:{order_id}:{tg_id}"),
-        2: InlineKeyboardButton(text="🔹 ИЗМЕНИТЬ СТАТУС 🔹", callback_data=f"edit_status:{order_id}"),
-        3: InlineKeyboardButton(text="🔹 ИЗМЕНИТЬ РЕЗУЛЬТАТ 🔹", callback_data=f"edit_complied:{order_id}"),
-        4: InlineKeyboardButton(text="🔹 ИЗМЕНИТЬ ОПИСАНИЕ 🔹", callback_data=f"edit_description:{order_id}"),
-        5: InlineKeyboardButton(text="🔹 ПЕРЕДАТЬ ЗАКАЗ 🔹", callback_data=f"transfer_order:{order_id}:{tg_id}"),
-        6: InlineKeyboardButton(text="🔹 УДАЛИТЬ ЗАКАЗ 🔹", callback_data=f"delete_order:{order_id}"),
-        7: InlineKeyboardButton(text="🔹 ВОЗОБНОВИТЬ ЗАКАЗ 🔹", callback_data=f"resume_order:{order_id}"),
+        1: InlineKeyboardButton(text="🏁 ВЫПОЛНЕНО", callback_data=f"comp_odr:{order_id}:{tg_id}"),
+        2: InlineKeyboardButton(text="🕑 СТАТУС WAIT", callback_data=f"ed_st:{order_id}"),
+        3: InlineKeyboardButton(text="✏️ ИЗМЕНИТЬ ОПИСАНИЕ", callback_data=f"ed_des:{order_id}"),
+        4: InlineKeyboardButton(text="🚫 ЗАКРЫТЬ ЗАКАЗ", callback_data=f"cl_odr:{order_id}"),
+        5: InlineKeyboardButton(text="🤝 ПЕРЕДАТЬ ЗАКАЗ", callback_data=f"tr_odr:{order_id}"),
+        6: InlineKeyboardButton(text="🗑 УДАЛИТЬ ЗАКАЗ", callback_data=f"del_odr:{order_id}"),
+        7: InlineKeyboardButton(text="♻️ ВОЗВРАТ В ТЕКУЩИЙ", callback_data=f"res_odr:{order_id}"),
         8: InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="cancel"),
     }
 
     inline_buttons = [[buttons_dict[idx]] for idx in index if idx in buttons_dict]
     return InlineKeyboardMarkup(inline_keyboard=inline_buttons)
+
+
+def transfer_master_keyboard(masters: List[Dict[str, str | int]]) -> InlineKeyboardMarkup:
+    """
+    Генерирует клавиатуру для выбора мастера при передаче заказа.
+
+    :param masters: Список мастеров в формате:
+        [{"tg_id": 123, "user_name": "Иван", "contact": "+7..."}, ...]
+    :return: InlineKeyboardMarkup с кнопками выбора и отмены
+    """
+    buttons = []
+    for master in masters:
+        btn = InlineKeyboardButton(
+            text=str(master["user_name"]),
+            callback_data=f"select_master:{master['tg_id']}"
+        )
+        buttons.append([btn])
+
+    # Кнопка отмены
+    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def quick_action_menu() -> InlineKeyboardMarkup:
@@ -336,18 +358,8 @@ def user_edit_profile():
 
 def login_menu(index: list):
     buttons_dict = {
-        1: InlineKeyboardButton(text="🔹 РЕМОНТ 🔹", callback_data='service:repair'),  #
-        2: InlineKeyboardButton(text="🔹 ТЕХ. ОБСЛУЖИВАНИЕ 🔹", callback_data='service:maintenance'),  #
-        3: InlineKeyboardButton(text="🔹 ДИАГНОСТИКА 🔹", callback_data='service:diagnostics'),  #
-        4: InlineKeyboardButton(text="🔹 ЗАПИСАТЬСЯ 🔹", callback_data='appointment'),  #
         5: InlineKeyboardButton(text="🔹 ПРОДОЛЖИТЬ 🔹", callback_data='car_rep_next'),
         6: InlineKeyboardButton(text="🔺 Назад 🔺", callback_data='cancel'),
-        7: InlineKeyboardButton(text="🔹 ВСТАТЬ В ОЧЕРЕДЬ 🔹", callback_data='in_stack'),
-        8: InlineKeyboardButton(text="🔹 ТЕКУЩИЙ РЕМОНТ 🔹", callback_data='info_rem'),  #
-        9: InlineKeyboardButton(text="🔹 ЗАДАТЬ ВОПРОС 🔹", callback_data='send_message'),  #
-        10: InlineKeyboardButton(text="🔹 НАПИСАТЬ ОТЗЫВ 🔹", callback_data='create_comment'),  #
-        11: InlineKeyboardButton(text="🔹 МОИ ДАННЫЕ 🔹", callback_data='login'),  #
-        12: InlineKeyboardButton(text="🔹 ИЗМЕНИТЬ ДАННЫЕ 🔹", callback_data='edit_menu'),  #
         13: InlineKeyboardButton(text="🔹 ИМЯ 🔹", callback_data='edit:user_name'),
         14: InlineKeyboardButton(text="🔹 МАРКА АВТО 🔹", callback_data='edit:brand_auto'),
         15: InlineKeyboardButton(text="🔹 ГОД ВЫПУСКА 🔹", callback_data='edit:year_auto'),
@@ -379,11 +391,12 @@ def staff_menu(index: list, user_id: int):
         1: InlineKeyboardButton(text="🔹 ОЖИДАНИЕ 🔹", callback_data=f'await:{user_id}'),
         2: InlineKeyboardButton(text="🔹 ОТКАЗ 🔹", callback_data=f'refuse:{user_id}'),
         3: InlineKeyboardButton(text="🔹 ЗВОНИТЕ 🔹", callback_data=f'call:{user_id}'),
-        4: InlineKeyboardButton(text="🔹 НАЗНАЧИТЬ ВРЕМЯ 🔹", callback_data=f'set_time:{user_id}'),
-        5: InlineKeyboardButton(text="🔹 ОТВЕТИТЬ 🔹", callback_data=f'replay_mess:{user_id}'),
+        4: InlineKeyboardButton(text="📤 ОТВЕТИТЬ ТЕКСТОМ", callback_data=f'replay_mess:{user_id}'),
+        5: InlineKeyboardButton(text="📆 НАЗНАЧИТЬ ВРЕМЯ", callback_data=f'set_time:{user_id}'),
         6: InlineKeyboardButton(text="🔹 НА СЕГОДНЯ 🔹", callback_data=f'today:{user_id}'),
         7: InlineKeyboardButton(text="🔹 ВЫБРАТЬ ДЕНЬ 🔹", callback_data=f'next_days:{user_id}'),
         8: InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="delete_msg"),
+        9: InlineKeyboardButton(text="🔹 УДОБНОЕ ВРЕМЯ? 🔹", callback_data=f'check_time:{user_id}'),
     }
 
     inline_buttons = [[buttons_dict[idx]] for idx in index if idx in buttons_dict]
@@ -429,7 +442,7 @@ def action_buttons_orders_menu(index: list, client_tg_id: int, master_tg_id: int
             callback_data=f"create_order:{client_tg_id}:{master_tg_id}"
         ),
         7: InlineKeyboardButton(
-            text="🔹 ОТПРАВИТЬ ЗАЯВКУ НА РЕМОНТ 🔹",
+            text="🔺 ОТПРАВИТЬ ЗАЯВКУ НА РЕМОНТ 🔺",
             callback_data=f"send_repair_req:{client_tg_id}:{master_tg_id}"
         ),
 
@@ -444,10 +457,22 @@ def action_buttons_orders_menu(index: list, client_tg_id: int, master_tg_id: int
             text="🔺 Назад к выбору 🔺",
             callback_data="cancel"
         ),
+
+        # --- Кнопка "Удалить" ---
+        10: InlineKeyboardButton(
+            text="🔺 НЕ ОТВЕЧАТЬ 🔺",
+            callback_data="cancel"
+        ),
     }
 
     inline_buttons = [[buttons_dict[idx]] for idx in index if idx in buttons_dict]
     return InlineKeyboardMarkup(inline_keyboard=inline_buttons)
+
+
+def clear_user_chat() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🧹 Очистить чат", callback_data="clean_client_chat")]
+    ])
 
 
 def back_button(to: str = "main") -> list:

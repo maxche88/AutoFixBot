@@ -184,15 +184,20 @@ async def count_and_name_gen(orders_list: List[Dict[str, Any]]) -> Tuple[int, Li
     return count, master_data
 
 
-async def delete_order(order_id: int) -> None:
+async def get_all_masters(exclude_tg_id: int | None = None) -> list[dict]:
     """
-    Удаляет заказ по его идентификатору.
-    Используется при закрытии заказа клиентом (после оценки).
+    Возвращает список мастеров: [{'tg_id': ..., 'user_name': ..., 'contact': ...}]
+    Исключает мастера с указанным tg_id (если задан).
     """
     async with async_session() as session:
-        stmt = delete(Orders).where(Orders.id == order_id)
-        await session.execute(stmt)
-        await session.commit()
+        query = select(User.tg_id, User.user_name, User.contact).where(User.role == "master")
+        if exclude_tg_id is not None:
+            query = query.where(User.tg_id != exclude_tg_id)
+        result = await session.execute(query)
+        return [
+            {"tg_id": row.tg_id, "user_name": row.user_name, "contact": row.contact}
+            for row in result.fetchall()
+        ]
 
 
 async def get_user_dict(tg_id: int, fields: Optional[Tuple[str, ...]] = None) -> Union[Dict[str, Any], Tuple, None]:
@@ -453,32 +458,46 @@ async def get_orders_by_user(
         return orders_list
 
 
-async def update_order(
-        order_id: int,
-        repair_status: str | None = None,
-        complied: bool | None = None,
-        description: str | None = None,
-) -> bool:
+async def update_order(order_id: int, **kwargs) -> bool:
     """
     Обновляет указанные поля заказа по его ID.
-    Обновляются только те поля, которые переданы (не None).
+    Обновляются только те поля, которые переданы и не равны None.
+    Поддерживаемые поля: все колонки модели Orders.
+
+    Пример:
+        await update_order(5, repair_status="in_work", tg_id_master=12345)
 
     :return: True, если заказ найден и обновлён.
     """
-    # Собираем только те поля, которые нужно обновить
-    update_data = {}
-    if repair_status is not None:
-        update_data["repair_status"] = repair_status
-    if complied is not None:
-        update_data["complied"] = complied
-    if description is not None:
-        update_data["description"] = description
+    if not kwargs:
+        return False
+
+    # 🔒 Получаем список допустимых имён колонок из модели
+    allowed_columns = set(Orders.__table__.columns.keys())
+
+    # Фильтруем только разрешённые и не-None поля
+    update_data = {
+        key: value for key, value in kwargs.items()
+        if key in allowed_columns and value is not None
+    }
 
     if not update_data:
-        return False  # Нечего обновлять
+        return False
 
     async with async_session() as session:
         stmt = update(Orders).where(Orders.id == order_id).values(**update_data)
+        result = await session.execute(stmt)
+        await session.commit()
+        return result.rowcount > 0
+
+
+async def delete_order(order_id: int) -> bool:
+    """
+    Удаляет заказ из базы данных по ID.
+    :return: True, если заказ был найден и удалён.
+    """
+    async with async_session() as session:
+        stmt = delete(Orders).where(Orders.id == order_id)
         result = await session.execute(stmt)
         await session.commit()
         return result.rowcount > 0
