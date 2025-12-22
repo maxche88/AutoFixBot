@@ -3,7 +3,8 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from database.requests import (get_user_dict, get_available_hours, create_appointment, get_active_order_id, add_order,
-                               get_orders_by_user, update_order, delete_order, get_all_masters)
+                               get_orders_by_user, update_order, delete_order, get_all_masters, get_appointments,
+                               delete_appointment)
 from bot import bot
 import asyncio
 from aiogram.exceptions import TelegramAPIError
@@ -49,8 +50,12 @@ class MasterTransfer(StatesGroup):
     choosing_recipient = State()  # выбор получателя
 
 
+class MasterEditTotalKm(StatesGroup):
+    waiting_for_update_km = State()  # Ввод нового значения total_km
+
+
 class MasterEditDescription(StatesGroup):
-    waiting_for_description = State()  # выбор получателя
+    waiting_for_description = State()  # Ввод текста описания
 
 
 REPAIR_STATUS_DISPLAY = {
@@ -64,13 +69,100 @@ REPAIR_STATUS_DISPLAY = {
 # ========= МАСТЕР ==========
 # ===========================
 
-# ЛИЧНЫЙ КАБИНЕТ МАСТЕРА"
+# ЛИЧНЫЙ КАБИНЕТ МАСТЕРА
+
+# ЗАПИСИ / ОЧЕРЕДЬ
+@router.callback_query(F.data == "rec_queue")
+async def handle_rec_queue(call: CallbackQuery):
+    await call.message.answer(
+        "📅 Выберите период для просмотра записей:",
+        reply_markup=kb.appointment_period_menu()
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("appt_period:"))
+async def handle_appointment_period(call: CallbackQuery):
+    period = call.data.split(":", 1)[1]
+    master_id = call.from_user.id
+
+    # Определяем фильтр
+    date_filter = None
+    title = ""
+    if period == "today":
+        date_filter = "today"
+        title = "📅 Записи на сегодня"
+    elif period == "month":
+        date_filter = "month"
+        title = "📆 Записи на этот месяц"
+    elif period == "all":
+        date_filter = None
+        title = "📁 Все записи"
+    else:
+        await call.answer("❌ Неверный выбор.", show_alert=True)
+        return
+
+    # Удаляем сообщение с выбором периода
+    await call.message.delete()
+
+    appointments = await get_appointments(tg_id_master=master_id, date_filter=date_filter)
+
+    if not appointments:
+        await call.message.answer(f"{title}\n\n❌ Нет записей.")
+        return
+
+    # Отправляем КАЖДУЮ запись как ОТДЕЛЬНОЕ сообщение
+    for appt in appointments:
+        date_str = appt["appointment_date"].strftime("%d.%m.%Y")
+        start_time = appt["appointment_time"].strftime("%H:%M")
+        end_time = appt["end_time"].strftime("%H:%M")
+
+        user_data = await get_user_dict(appt["tg_id_user"], ["user_name", "contact"])
+        user_name = user_data["user_name"] if user_data else "—"
+        user_contact = user_data["contact"] if user_data else "—"
+
+        text = (
+            f"🆔 <b>Запись №{appt['id']}</b>\n"
+            f"👤 Клиент: {user_name}\n"
+            f'📱 <a href="tg://user?id={appt["tg_id_user"]}">{appt["tg_id_user"]}</a>\n'
+            f'📞 <a href="tel:{user_contact}">{user_contact}</a>\n'
+            f"📆 {date_str} | 🕗 {start_time}–{end_time}"
+        )
+
+        await call.message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=kb.appointment_action_menu(appt["id"], appt["tg_id_user"])
+        )
+
+    await call.answer()
+
+
+# УДАЛИТЬ ЗАПИСЬ
+@router.callback_query(F.data.startswith("del_app:"))
+async def delete_appointment_handler(call: CallbackQuery):
+    try:
+        appointment_id = int(call.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await call.answer("❌ Некорректный ID записи.", show_alert=True)
+        return
+
+    # Удаляем запись
+    success = await delete_appointment(appointment_id)
+
+    if success:
+        await call.answer("✅ Запись удалена.", show_alert=True)
+        # Удаляем сообщение с записью
+        await call.message.delete()
+    else:
+        await call.answer("❌ Запись не найдена или уже удалена.", show_alert=True)
+
 
 # ВЫБОР "ТЕКУЩИЕ ЗАКАЗЫ"
 @router.callback_query(F.data == "my_actions_orders")
-async def master_current_orders(call: CallbackQuery, state: FSMContext):
+async def master_current_orders(call: CallbackQuery):
     master_id = call.from_user.id
-    # Получаем активные заказы, где пользователь — мастер
+    # Получаем активные заказы, между пользователем и мастером
     orders = await get_orders_by_user(tg_id_master=master_id, active=True)
 
     if not orders:
@@ -92,19 +184,20 @@ async def master_current_orders(call: CallbackQuery, state: FSMContext):
                 f"👤 Клиент: {order['user_name']}\n"
                 f'📱 Телеграм ID: <a href="tg://user?id={tg_id_user}">{tg_id_user}</a>\n'
                 f'📞 Сот.тел: <a href="tel:{user_contact}">{user_contact}</a>\n'
-                f"🚗 Марка авто: {order.get('brand_auto') or '—'}\n"
-                f"📆 Год выпуска: {order.get('year_auto') or '—'}\n"
-                f"ℹ️ VIN: {order.get('vin_number') or '—'}\n"
-                f"🔢 Гос. номер: {order.get('gos_num') or '—'}\n"
+                f"🚗 Марка авто: {order['brand_auto']}\n"
+                f"📆 Год выпуска: {order['year_auto']}\n"
+                f"🛞 Пробег авто: {order['total_km']} km\n"
+                f"ℹ️ VIN: {order['vin_number']}\n"
+                f"🔢 Гос. номер: {order['gos_num']}\n"
                 f"🔧 Статус: {status_display}\n"
-                f"📝 Описание:\n{order.get('description') or '—'}\n\n"
+                f"📝 Описание:\n{order['description']}\n\n"
                 f"📅 Дата создания: {date_str}"
             )
 
             await call.message.answer(
                 text,
                 parse_mode="HTML",
-                reply_markup=kb.master_order_action_menu([1, 2, 3, 4, 5, 6, 7, 8], order_id, tg_id_user)
+                reply_markup=kb.master_order_action_menu([1, 2, 9, 3, 4, 5, 6, 7, 8], order_id, tg_id_user)
             )
 
     await call.answer()
@@ -154,7 +247,8 @@ async def send_quick_pickup(call: CallbackQuery, state: FSMContext):
     master_tg_id = data["master_tg_id"]
 
     # Получаем имя мастера
-    master_name, = await get_user_dict(master_tg_id, ("user_name",))
+    user_data = await get_user_dict(master_tg_id, ["user_name"])
+    master_name = user_data["user_name"] if user_data else "—"
 
     # Обновляем заказ: статус = wait, complied = True
     await update_order(
@@ -193,7 +287,8 @@ async def send_custom_message_to_client(message: Message, state: FSMContext):
     order_id = data["order_id"]
     master_tg_id = data["master_tg_id"]
 
-    master_name, = await get_user_dict(master_tg_id, ("user_name",))
+    user_data = await get_user_dict(master_tg_id, ["user_name"])
+    master_name = user_data["user_name"] if user_data else "—"
 
     # Обновляем статус заказа
     await update_order(
@@ -211,6 +306,82 @@ async def send_custom_message_to_client(message: Message, state: FSMContext):
     )
 
     await message.answer("✅ Ваше сообщение отправлено клиенту.")
+    await state.clear()
+
+
+# === ОБНОВИТЬ ПРОБЕГ КМ ===
+@router.callback_query(F.data.startswith("up_km:"))
+async def edit_status(call: CallbackQuery, state: FSMContext):
+    try:
+        order_id = int(call.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await call.answer("❌ Некорректный ID заказа.", show_alert=True)
+        return
+
+    await state.update_data(order_id=order_id)
+
+    # Отправляем инфо. текст и сохраняем его ID
+    prompt_msg = await call.message.answer(
+        "📋 Обновление пробега авто.\n\n✍️ Введите реальный пробег в чат:"
+    )
+
+    await state.update_data(prompt_message_id=prompt_msg.message_id)
+    await state.set_state(MasterEditTotalKm.waiting_for_update_km)
+
+
+@router.message(MasterEditTotalKm.waiting_for_update_km)
+async def process_new_total_km(message: Message, state: FSMContext):
+    new_total_km = message.text.strip()
+
+    # Удаляем сообщение пользователя сразу
+    try:
+        await message.delete()
+    except TelegramAPIError:
+        pass
+
+    if not new_total_km:
+        # Удаляем старый запрос (если есть)
+        data = await state.get_data()
+        old_prompt_id = data.get("prompt_message_id")
+        if old_prompt_id:
+            try:
+                await message.bot.delete_message(message.chat.id, old_prompt_id)
+            except TelegramAPIError:
+                pass
+
+        # Отправляем новый запрос
+        prompt_msg = await message.answer("❌ Пробег не может быть пустым. Введите снова:")
+        await state.update_data(prompt_message_id=prompt_msg.message_id)
+        return
+
+    data = await state.get_data()
+    order_id = data.get("order_id")
+    prompt_msg_id = data.get("prompt_message_id")
+
+    if not order_id:
+        await message.answer("❌ Ошибка: заказ не найден.")
+        await state.clear()
+        return
+
+    success = await update_order(order_id=order_id, total_km=new_total_km)
+
+    # Удаляем запрос ("Введите описание")
+    if prompt_msg_id:
+        try:
+            await message.bot.delete_message(message.chat.id, prompt_msg_id)
+        except TelegramAPIError:
+            pass
+
+    # Подтверждение
+    confirm = await message.answer("✅ Пробег обновлен!" if success else "❌ Ошибка обновления.")
+
+    await asyncio.sleep(2)
+
+    try:
+        await confirm.delete()
+    except TelegramAPIError:
+        pass
+
     await state.clear()
 
 
@@ -479,7 +650,7 @@ async def handle_await_action(call: CallbackQuery):
 async def handle_refuse_action(call: CallbackQuery):
     parts = call.data.split(":", 1)
     user_id = int(parts[1])
-    response_text = f"К сожалению, не сможем помочь с этой проблемой."
+    response_text = f"Извините, но к сожалению не сможем помочь с этой проблемой."
     await bot.send_message(chat_id=user_id, text=response_text)
     await call.message.answer("✅ Ответ «Отказ» отправлен пользователю.")
     await call.answer()
@@ -492,7 +663,9 @@ async def handle_call_action(call: CallbackQuery):
     user_id = int(parts[1])
     master_tg_id = call.from_user.id
 
-    master_name, master_contact = await get_user_dict(master_tg_id, ("user_name", "contact"))
+    user_data = await get_user_dict(master_tg_id, ["user_name", "contact"])
+    master_name = user_data["user_name"] if user_data else "—"
+    master_contact = user_data["contact"] if user_data else "—"
 
     response_text = (f'Звоните по номеру!\n'
                      f'Имя: {master_name}\n'
@@ -510,7 +683,9 @@ async def handle_check_time_action(call: CallbackQuery):
     # Извлекаем tg_id клиента
     client_tg_id = int(call.data.split(":", 1)[1])
     master_tg_id = call.from_user.id  # ID мастера — он нажал кнопку
-    master_name, = await get_user_dict(master_tg_id, ("user_name",))
+
+    user_data = await get_user_dict(master_tg_id, ["user_name"])
+    master_name = user_data["user_name"] if user_data else "—"
 
     # Отправляем клиенту сообщение с уточнением
     await bot.send_message(
@@ -539,7 +714,9 @@ async def handle_set_time_action(call: CallbackQuery, state: FSMContext):
         await call.answer("Некорректный ID", show_alert=True)
         return
 
-    user_name, = await get_user_dict(user_id, ("user_name",))
+    user_data = await get_user_dict(user_id, ["user_name"])
+    user_name = user_data["user_name"] if user_data else "—"
+
     await state.update_data(target_user_id=user_id, user_name=user_name)
 
     await call.message.answer(
@@ -807,30 +984,32 @@ async def handle_duration_selection(call: CallbackQuery, state: FSMContext):
     end_hour = start_hour + duration_hours
 
     # Получаем tg_id мастера
-    master_id = call.message.chat.id
+    master_tg_id = call.message.chat.id
 
     # Записываем в БД
-    await create_appointment(user_id, master_id, selected_date, start_hour, end_hour)
+    await create_appointment(user_id, master_tg_id, selected_date, start_hour, end_hour)
 
     # Отправляем пользователю
     start_str = f"{int(start_hour)}:{'30' if start_hour % 1 else '00'}"
     end_str = f"{int(end_hour)}:{'30' if end_hour % 1 else '00'}"
 
     # Присваиваем переменным полученое имя и номер тел.
-    master_name, tel = await get_user_dict(tg_id=master_id, fields=('user_name', 'contact'))
+    user_data = await get_user_dict(master_tg_id, ["user_name", "contact"])
+    master_name = user_data["user_name"] if user_data else "—"
+    tel = user_data["contact"] if user_data else "—"
 
     await bot.send_message(
         chat_id=user_id,
         text=(
             f"✅ Запись подтверждена!\n"
             f"👤 Имя мастера: {master_name}\n"
-            f"📱 Телеграм: {master_id}\n"
+            f"📱 Телеграм: {master_tg_id}\n"
             f"📞 Сот. тел.: {tel}\n"
             f"📅 Дата: {selected_date.strftime('%d.%m.%Y')}\n"
             f"🕒 Время: {start_str}–{end_str}\n\n"
             f"После осмотра вашего авто, по просьбе мастера вы можете нажать на кнопку расположенную ниже."
         ),
-        reply_markup=kb.action_buttons_orders_menu([7], user_id, master_id)
+        reply_markup=kb.action_buttons_orders_menu([7], user_id, master_tg_id)
     )
 
     await call.message.delete()
@@ -876,7 +1055,7 @@ async def send_custom_reply(message: Message, state: FSMContext):
     # Получаем сохранённый tg_id из состояния мастера
     data = await state.get_data()
     user_id = data.get("target_user_id")
-    master_id = message.chat.id
+    master_tg_id = message.chat.id
 
     # Безопасная проверка: если ID отсутствует — выходим
     if not user_id:
@@ -885,13 +1064,14 @@ async def send_custom_reply(message: Message, state: FSMContext):
         return
 
     # Запрашиваем имя пользователя из базы данных
-    master_name, = await get_user_dict(master_id, ("user_name",))
+    user_data = await get_user_dict(master_tg_id, ["user_name"])
+    master_name = user_data["user_name"] if user_data else "—"
 
     # Отправляем сообщение пользователю с кнопкой для обратной связи
     await bot.send_message(
         chat_id=user_id,
         text=f"{master_name}:\n{message.text}",
-        reply_markup=kb.action_buttons_orders_menu([8, 10], user_id, master_id)
+        reply_markup=kb.action_buttons_orders_menu([8, 10], user_id, master_tg_id)
     )
 
     # Подтверждаем, что сообщение отправлено
@@ -992,8 +1172,13 @@ async def create_repair_order(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     description = data.get("description", "Без описания")
 
-    client_data = await get_user_dict(client_tg_id)
-    master_data = await get_user_dict(master_tg_id)
+    # Получаем только нужные поля для клиента и мастера
+    client_fields = ["user_name", "contact", "brand_auto", "gos_num", "year_auto", "vin_number"]
+    master_fields = ["user_name", "contact"]
+
+    client_data = await get_user_dict(client_tg_id, client_fields)
+    master_data = await get_user_dict(master_tg_id, master_fields)
+
     if not client_data or not master_data:
         await call.answer("❌ Пользователь не найден", show_alert=True)
         await state.clear()

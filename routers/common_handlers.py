@@ -304,11 +304,12 @@ async def info_rem(call: CallbackQuery, state: FSMContext):
             f"Результат: {'Работа выполнена' if order['complied'] else 'В работе'}\n\n"
             f"🆔 ID заказа: {order['id']}\n"
             f"👤 Мастер: {order['master_name']}\n"
-            f"🚗 Марка авто: {order.get('brand_auto') or '—'}\n"
-            f"📆 Год выпуска: {order.get('year_auto') or '—'}\n"
-            f"🔢 Гос. номер: {order.get('gos_num') or '—'}\n"
+            f"🚗 Марка авто: {order.get('brand_auto')}\n"
+            f"🛞 Пробег км: {order.get('total_km')}\n"
+            f"📆 Год выпуска: {order.get('year_auto')}\n"
+            f"🔢 Гос. номер: {order.get('gos_num')}\n"
             f"🔧 Статус: {status_display}\n"
-            f"📝 Описание:\n{order.get('description') or '—'}\n\n"
+            f"📝 Описание:\n{order.get('description')}\n\n"
             f"📅 Дата создания: {date_str}"
         )
 
@@ -341,7 +342,7 @@ async def info_rem(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-# Удаляет текущие заказы, возвращает в личный кабинет
+# Скрывает текущие заказы, возвращает в личный кабинет
 @router.callback_query(F.data == "back_to_account")
 async def back_to_account_from_orders(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
@@ -474,83 +475,80 @@ async def handle_service_choice(call: CallbackQuery, state: FSMContext):
 
     service_name = SERVICE_NAMES[service_key]
 
-    # Сохраняем выбранный тип услуги
-    await state.update_data(chosen_service=service_name)
-
-    # Получаем данные пользователя из БД
     user_id = call.from_user.id
+
+    # Получаем данные пользователя из таблицы
     user_data = await get_user_dict(
-        user_id, ("user_name", "rating", "brand_auto", "year_auto", "contact")
+        user_id,
+        ["user_name", "rating", "brand_auto", "year_auto", "contact", "total_km", "vin_number", "gos_num"]
     )
 
     if not user_data:
         await call.message.answer("❌ Не удалось загрузить ваши данные. Обратитесь в поддержку.")
         await state.clear()
-        await call.answer()
         return
 
-    user_name, rating, brand_auto, year_auto, contact = user_data
+    # Сохраняем выбранный тип услуги и данные клиента
+    await state.update_data(
+        chosen_service=service_name,
+        user_data=user_data
+    )
 
     # Формируем сообщение с данными
     preview_text = (
-        "📋 <b>Проверьте ваши данные:</b>\n\n"
-        f"Имя: {user_name}\n"
-        f"Рейтинг: {rating}\n"
-        f"Марка авто: {brand_auto}\n"
-        f"Год выпуска: {year_auto}\n"
-        f'Контакт: <a href="tel:{contact}">{contact}</a>\n'
-        f"Тип услуги: {service_name}\n\n"
-        "Если всё верно — нажмите <b>«Записаться»</b>.\n"
+        f"📋 Проверьте ваши данные:\n\n"
+        f"👤 Имя: {user_data['user_name']}\n"
+        f'📞 Сот.тел: {user_data["contact"]}\n'
+        f"🚗 Марка авто: {user_data['brand_auto']}\n"
+        f"📆 Год выпуска: {user_data['year_auto']}\n"
+        f"ℹ️ VIN: {user_data['vin_number']}\n"
+        f"🔢 Гос. номер: {user_data['gos_num']}\n"
+        f"🔧 Тип услуги: {service_name}\n\n"
+        f"Если всё верно — нажмите «Записаться».\n"
         "Мастер свяжется с вами, чтобы уточнить удобное время."
     )
 
     await call.message.answer(preview_text, reply_markup=kb.login_menu([19, 6]))
     await state.set_state(Booking.confirming_data)
-    await call.answer()
 
 
-# Обработчик "Подтвердить" и "Отмена"
+# Обработчик "Подтвердить"
 @router.callback_query(Booking.confirming_data, F.data == "confirm_booking")
 async def confirm_booking(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     service_name = data.get("chosen_service")
+    user_data = data.get("user_data")
     user_id = call.from_user.id
 
-    # Получаем данные
-    user_data = await get_user_dict(
-        user_id, ("user_name", "rating", "brand_auto", "year_auto", "contact")
-    )
     if not user_data:
         await call.message.answer("❌ Ошибка при загрузке данных.")
         await state.clear()
         await call.answer()
         return
 
-    user_name, rating, brand_auto, year_auto, contact = user_data
-
-    # Формируем сообщение для мастеров
+    contact = user_data["contact"]
     formatted_request = (
         "🔔 <b>Новая заявка на запись!</b>\n\n"
-        f"👤 Имя: {user_name}\n"
-        f"⭐️ Рейтинг: {rating}\n"
-        f"🚗 Марка авто: {brand_auto}\n"
-        f"📆 Год выпуска: {year_auto}\n"
+        f"👤 Имя: {user_data['user_name']}\n"
         f'📱 Телеграм ID: <a href="tg://user?id={user_id}">{user_id}</a>\n'
         f'📞 Сот.тел: <a href="tel:{contact}">{contact}</a>\n'
+        f"⭐️ Рейтинг: {user_data['rating']}\n"
+        f"🚗 Марка авто: {user_data['brand_auto']}\n"
+        f"📆 Год выпуска: {user_data['year_auto']}\n"
+        f"🛞 Пробег км: {user_data['total_km']}\n"
         f"⚙️ Тип услуги: {service_name}\n\n"
         "Если готовы принять — свяжитесь с клиентом и уточните время."
     )
 
     # Получаем всех мастеров и админов с can_mess=True
     master_ids = await can_mess_true()  # возвращает список tg_id
-
-    # Отправляем каждому
+    # Отправляем на все полученые tg_id
     for master_id in master_ids:
         await bot.send_message(
             chat_id=master_id,
             text=formatted_request,
             parse_mode="HTML",
-            reply_markup=kb.staff_menu([3, 4, 5], user_id=user_id)
+            reply_markup=kb.staff_menu([1, 2, 3, 9, 4, 5], user_id=user_id)
         )
 
     await call.answer("✅ Заявка отправлена! Мастер свяжется с вами в ближайшее время.", show_alert=True)
@@ -558,7 +556,7 @@ async def confirm_booking(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-@router.callback_query(Booking.confirming_data, F.data == "cancel")
+@router.callback_query(F.data == "cancel")
 async def cancel_booking(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await call.message.delete()
@@ -594,7 +592,8 @@ async def save_support_message(message: Message, state: FSMContext) -> None:
 
     user_id = message.from_user.id
     user_data = await get_user_dict(
-        user_id, ("user_name", "rating", "brand_auto", "year_auto", "contact")
+        user_id,
+        ["user_name", "rating", "brand_auto", "year_auto", "contact", "total_km"]
     )
 
     if not user_data:
@@ -607,7 +606,7 @@ async def save_support_message(message: Message, state: FSMContext) -> None:
         support_text=message.text[:100],
         user_id=user_id,
         user_data=user_data,
-        user_message_id=message.message_id  # ← сохраняем ID введенного текста
+        user_message_id=message.message_id  # сохраняем ID введенного текста
     )
 
     data = await state.get_data()
@@ -622,7 +621,6 @@ async def save_support_message(message: Message, state: FSMContext) -> None:
         )
         await state.set_state(Mess.confirm_step)
     else:
-        # fallback
         sent = await message.answer(
             "Подтвердите отправку сообщения:",
             reply_markup=kb.user_confirm_send_mess()
@@ -646,15 +644,16 @@ async def confirm_support_message(call: CallbackQuery, state: FSMContext) -> Non
         await state.clear()
         return
 
-    user_name, rating, brand_auto, year_auto, contact = user_data
+    contact = user_data['contact']
 
     # Формируем сообщение для мастеров
     formatted_message = (
         f"📬 СООБЩЕНИЕ\n\n"
-        f"👤 Имя: {user_name}\n"
-        f"⭐️ Рейтинг: {rating}\n"
-        f"🚗 Марка авто: {brand_auto}\n"
-        f"📆 Год выпуска: {year_auto}\n"
+        f"👤 Имя: {user_data['user_name']}\n"
+        f"⭐️ Рейтинг: {user_data['rating']}\n"
+        f"🚗 Марка авто: {user_data['brand_auto']}\n"
+        f"📆 Год выпуска: {user_data['year_auto']}\n"
+        f"🛞 Пробег км: {user_data['total_km']}\n"
         f'📱 Телеграм ID: <a href="tg://user?id={user_id}">{user_id}</a>\n'
         f'📞 Контакт: <a href="tel:{contact}">{contact}</a>\n'
         f"📨 Сообщение:\n\n{message_text}"
@@ -754,7 +753,7 @@ async def save_comment_text(message: Message, state: FSMContext) -> None:
         user_message_id=message.message_id,
         user_id=message.from_user.id,
         user_name=message.from_user.full_name,
-        send_text=message.text[:128]  # ограничение по модели Comments
+        send_text=message.text[:128]
     )
 
     data = await state.get_data()
@@ -770,7 +769,6 @@ async def save_comment_text(message: Message, state: FSMContext) -> None:
         )
         await state.set_state(Send_feedback.confirm)
     else:
-        # fallback (маловероятно)
         sent = await message.answer(
             "❓ Подтвердите отправку отзыва:",
             reply_markup=kb.user_confirm_send_comment()
@@ -872,20 +870,21 @@ async def cancel_fsm(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "login")
 async def show_user_data(call: CallbackQuery) -> None:
     user_id = call.from_user.id
-    reg_user = await get_user_dict(
+    user_data = await get_user_dict(
         user_id,
-        ("user_name", "rating", "brand_auto", "year_auto", "gos_num", "vin_number", "contact")
+        ["user_name", "brand_auto", "year_auto", "gos_num", "vin_number", "rating", "contact", "total_km"]
     )
 
     text = (
         "Ваши регистрационные данные и информация об авто:\n\n"
-        f"👤 Имя: {reg_user[0]}\n"
-        f"⭐ Рейтинг: {reg_user[1]}\n"
-        f"🚗 Марка авто: {reg_user[2] or '—'}\n"
-        f"📆 Год выпуска: {reg_user[3] or '—'}\n"
-        f"🔢 Гос. номер: {reg_user[4] or '—'}\n"
-        f"🆔 VIN номер: {reg_user[5] or '—'}\n"
-        f"📞 Контактный номер: {reg_user[6] or '—'}"
+        f"👤 Имя: {user_data['user_name']}\n"
+        f"📞 Контактный номер: {user_data['contact']}\n"
+        f"⭐ Рейтинг: {user_data['rating']}\n"
+        f"🚗 Марка авто: {user_data['brand_auto']}\n"
+        f"🛞 Пробег км: {user_data['total_km']}\n"
+        f"📆 Год выпуска: {user_data['year_auto']}\n"
+        f"🔢 Гос. номер: {user_data['gos_num']}\n"
+        f"🆔 VIN номер: {user_data['vin_number']}\n"
     )
 
     try:
@@ -893,6 +892,7 @@ async def show_user_data(call: CallbackQuery) -> None:
             text=text,
             reply_markup=kb.user_edit_profile()
         )
+
     except Exception as e:
         # Логируем ошибку
         print(f"Ошибка при редактировании: {e}")
@@ -1035,33 +1035,34 @@ async def handle_send_repair_request(call: CallbackQuery):
         return
 
     try:
-        client_tg_id = int(parts[1])
+        user_tg_id = int(parts[1])
         master_tg_id = int(parts[2])
     except ValueError:
         await call.answer("❌ Некорректные данные", show_alert=True)
         return
 
     # Проверяем, что клиент существует
-    client_data = await get_user_dict(client_tg_id)
-    if not client_data:
+    user_data = await get_user_dict(user_tg_id)
+    if not user_data:
         await call.answer("❌ Клиент не найден", show_alert=True)
         return
-
+    print()
     # Отправляем мастеру сообщение с кнопкой создания заказа
     await bot.send_message(
         chat_id=master_tg_id,
         text=(
             f"🔹 ЗАЯВКА НА РЕМОНТ 🔹\n\n"
-            f"👤 Имя: {client_data['user_name']}\n"
-            f"🚗 Марка авто: {client_data['brand_auto']} \n"
-            f"📆 Год выпуска: {client_data['year_auto']}\n"
-            f"ℹ️ VIN: {client_data['vin_number']}\n"
-            f"🔢 Гос. номер: {client_data['gos_num']}\n"
-            f"📱 Телеграм: {client_tg_id}\n"
-            f"📞 Сот. тел.: {client_data['contact']}\n\n"
-            f"Выберите тип работ или введите текстом:"
+            f"👤 Имя: {user_data['user_name']}\n"
+            f"📱 Телеграм: {user_data['tg_id']}\n"
+            f"📞 Сот. тел.: {user_data['contact']}\n"
+            f"🚗 Марка авто: {user_data['brand_auto']} \n"
+            f"🛞 Пробег км: {user_data['total_km']} \n"
+            f"📆 Год выпуска: {user_data['year_auto']}\n"
+            f"ℹ️ VIN: {user_data['vin_number']}\n"
+            f"🔢 Гос. номер: {user_data['gos_num']}\n\n"
+            "Выберите тип работ или введите текстом:"
         ),
-        reply_markup=kb.action_buttons_orders_menu([1, 2, 3, 4, 5], client_tg_id, master_tg_id)
+        reply_markup=kb.action_buttons_orders_menu([1, 2, 3, 4, 5], user_tg_id, master_tg_id)
     )
 
     # Убираем кнопку у клиента
@@ -1078,13 +1079,13 @@ async def handle_send_answer_button(call: CallbackQuery, state: FSMContext):
         return
 
     try:
-        client_tg_id = int(parts[1])
+        user_tg_id = int(parts[1])
         master_tg_id = int(parts[2])
     except ValueError:
         await call.answer("❌ Некорректный ID", show_alert=True)
         return
 
-    if call.from_user.id != client_tg_id:
+    if call.from_user.id != user_tg_id:
         await call.answer("❌ Эта кнопка не для вас", show_alert=True)
         return
 
@@ -1111,17 +1112,17 @@ async def process_client_reply(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    client_tg_id = message.from_user.id
-    client_name, brand_auto = await get_user_dict(client_tg_id, ("user_name", "brand_auto"))
+    user_tg_id = message.from_user.id
+    user_data = await get_user_dict(user_tg_id, ["user_name", "brand_auto"])
 
     # Отправляем ответ мастеру
     await message.bot.send_message(
         chat_id=master_tg_id,
         text=(
             f"📨 Ответ от клиента\n"
-            f"📱 tg_id: {client_tg_id}\n"
-            f"👤 Имя: {client_name} \n"
-            f"🚗 Марка авто: {brand_auto}\n\n"
+            f"📱 tg_id: {user_tg_id}\n"
+            f"👤 Имя: {user_data['user_name']} \n"
+            f"🚗 Марка авто: {user_data['brand_auto']}\n\n"
             f"{message.text}"
         )
     )

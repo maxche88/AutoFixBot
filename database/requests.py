@@ -7,13 +7,13 @@
 
 from database.models import User, Comments, Orders, Appointment
 from database.engine import async_session
-from sqlalchemy import update, select, delete
+from sqlalchemy import func, update, select, delete, and_
 from datetime import datetime, timedelta, date, time
 from typing import Optional, Union, Tuple, List, Dict, Any
 from config import config
 
 
-def connection(func):
+def connection(func_):
     """
     Декоратор для автоматического управления сессией базы данных.
 
@@ -22,7 +22,7 @@ def connection(func):
     """
     async def wrapper(*args, **kwargs):
         async with async_session() as session:
-            return await func(session, *args, **kwargs)
+            return await func_(session, *args, **kwargs)
     return wrapper
 
 
@@ -200,41 +200,99 @@ async def get_all_masters(exclude_tg_id: int | None = None) -> list[dict]:
         ]
 
 
-async def get_user_dict(tg_id: int, fields: Optional[Tuple[str, ...]] = None) -> Union[Dict[str, Any], Tuple, None]:
+async def get_user_by_tg_id(tg_id: int, fields: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
     """
-    Возвращает данные пользователя по его Telegram ID.
+    Получает пользователя по Telegram ID, возвращая указанные поля.
+    Если `fields` не указан — возвращает все поля модели User.
+
+    Примеры:
+        # Все поля
+        user = await get_user_by_tg_id(123)
+
+        # Только нужные поля
+        user = await get_user_by_tg_id(123, ["user_name", "contact", "brand_auto"])
 
     :param tg_id: Telegram ID пользователя.
-    :param fields: Необязательный кортеж имён полей (например, ('user_name', 'contact')).
-                   Если указан — возвращает кортеж значений в том же порядке.
-                   Если не указан — возвращает полный словарь данных.
-    :return: Словарь всех полей, кортеж значений или None, если пользователь не найден.
+    :param fields: Список имён полей для выборки (например, ["user_name", "contact"]).
+                   Если None — возвращаются все поля.
+    :return: Словарь с данными пользователя или None, если не найден.
     """
-    async with async_session() as session:
-        stmt = select(User).where(User.tg_id == tg_id)
-        result = await session.execute(stmt)
-        user = result.scalar_one_or_none()
+    allowed_columns = set(User.__table__.columns.keys())
 
-        if not user:
+    if fields is not None:
+        # Оставляем только существующие поля
+        valid_fields = [f for f in fields if f in allowed_columns]
+        if not valid_fields:
+            return None
+        columns_to_select = [User.__table__.c[field] for field in valid_fields]
+    else:
+        # Выбираем все колонки
+        columns_to_select = list(User.__table__.columns.keys)
+
+    async with async_session() as session:
+        stmt = select(*columns_to_select).where(User.tg_id == tg_id)
+        result = await session.execute(stmt)
+        row = result.fetchone()
+
+        if row is None:
             return None
 
-        user_dict = {
-            "id": user.id,
-            "tg_id": user.tg_id,
-            "user_name": user.user_name,
-            "status": user.status,
-            "rating": user.rating,
-            "contact": user.contact,
-            "brand_auto": user.brand_auto,
-            "year_auto": user.year_auto,
-            "gos_num": user.gos_num,
-            "vin_number": user.vin_number,
-            "date": user.date.isoformat(),
-        }
+        user_dict = dict(row)
 
-        if fields:
-            return tuple(user_dict.get(field) for field in fields)
+        # Обрабатываем дату, как в оригинале (если есть)
+        if 'date' in user_dict and user_dict['date'] is not None:
+            user_dict['date'] = user_dict['date'].isoformat()
+
         return user_dict
+
+
+async def get_user_dict(tg_id: int, fields: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+    """
+    Получает данные пользователя из базы по его Telegram ID.
+
+    Функция поддерживает выборку как всех полей, так и только указанных.
+    Все имена полей проверяются на существование в модели User —
+    опечатки или несуществующие поля игнорируются.
+
+    Примеры:
+        # Получить все поля пользователя
+        user = await get_user_dict(123456789)
+
+        # Получить только нужные поля
+        user = await get_user_dict(123456789, ["user_name", "contact", "brand_auto"])
+
+    :param tg_id: Telegram ID пользователя (уникальный идентификатор).
+    :param fields: Список имён колонок для выборки (например: ["user_name", "contact"]).
+                   Если None — возвращаются все поля модели User.
+    :return: Словарь вида {"поле": значение, ...} или None, если пользователь не найден.
+    """
+    # Получаем множество допустимых имён колонок из модели User
+    allowed_columns = set(User.__table__.columns.keys())
+
+    if fields is not None:
+        # Фильтруем только существующие поля (защита от опечаток)
+        valid_fields = [f for f in fields if f in allowed_columns]
+        if not valid_fields:
+            return None
+        # Формируем список колонок для SELECT-запроса
+        columns = [getattr(User, field) for field in valid_fields]
+    else:
+        # Выбираем все колонки модели User
+        columns = [getattr(User, col) for col in allowed_columns]
+
+    # Извлекаем имена колонок для последующего сопоставления с данными
+    column_names = [col.key for col in columns]
+
+    async with async_session() as session:
+        stmt = select(*columns).where(User.tg_id == tg_id)
+        result = await session.execute(stmt)
+        row = result.fetchone()
+
+        if row is None:
+            return None
+
+        # Собираем словарь: ключ:значение
+        return dict(zip(column_names, row))
 
 
 async def update_user(tg_id: int, column: str, value: Any) -> bool:
@@ -244,16 +302,16 @@ async def update_user(tg_id: int, column: str, value: Any) -> bool:
     :param tg_id: Telegram ID пользователя.
     :param column: Имя колонки модели User (например, 'contact', 'brand_auto').
     :param value: Новое значение.
-    :return: True при успехе, None если колонка не существует.
+    :return: True, если пользователь найден и поле обновлено.
     """
     if not hasattr(User, column):
         return False
 
     async with async_session() as session:
         stmt = update(User).where(User.tg_id == tg_id).values({column: value})
-        await session.execute(stmt)
+        result = await session.execute(stmt)
         await session.commit()
-        return True
+        return result.rowcount > 0
 
 
 async def can_mess_true() -> List[int]:
@@ -314,8 +372,7 @@ async def get_available_hours(target_date: date):
                 if start_dt < hour_end and end_dt > hour_start:
                     occupied_hours.add(current_hour)
                 else:
-                    # Так как записи упорядочены по времени, можно выйти,
-                    # но для надёжности — проверим все часы до 24
+                    # для надёжности — проверим все часы до 24
                     pass
 
                 current_hour += 1
@@ -368,6 +425,70 @@ async def create_appointment(user_id: int, master_id: int, date_val: date, start
         )
         session.add(new_appointment)
         await session.commit()
+
+
+async def get_appointments(
+    tg_id_master: Optional[int] = None,
+    tg_id_user: Optional[int] = None,
+    date_filter: Optional[str] = None  # "today", "month", or None (all)
+) -> List[Dict[str, Any]]:
+    """
+    Получает записи с опциональной фильтрацией по дате.
+    """
+    async with async_session() as session:
+        stmt = select(Appointment)
+
+        if tg_id_master is not None:
+            stmt = stmt.where(Appointment.tg_id_master == tg_id_master)
+        if tg_id_user is not None:
+            stmt = stmt.where(Appointment.tg_id_user == tg_id_user)
+
+        # Фильтрация по дате
+        today = datetime.utcnow().date()
+        if date_filter == "today":
+            stmt = stmt.where(func.date(Appointment.appointment_date) == today)
+        elif date_filter == "month":
+            first_day = today.replace(day=1)
+            if today.month == 12:
+                next_month = today.replace(year=today.year + 1, month=1, day=1)
+            else:
+                next_month = today.replace(month=today.month + 1, day=1)
+            stmt = stmt.where(
+                and_(
+                    Appointment.appointment_date >= first_day,
+                    Appointment.appointment_date < next_month
+                )
+            )
+
+        stmt = stmt.order_by(Appointment.appointment_date, Appointment.appointment_time)
+        result = await session.execute(stmt)
+        appointments = result.scalars().all()
+
+        return [
+            {
+                "id": appt.id,
+                "tg_id_user": appt.tg_id_user,
+                "tg_id_master": appt.tg_id_master,
+                "appointment_date": appt.appointment_date,
+                "appointment_time": appt.appointment_time,
+                "end_time": appt.end_time,
+            }
+            for appt in appointments
+        ]
+
+
+async def delete_appointment(appointment_id: int) -> bool:
+    """
+    Удаляет запись из таблицы appointments по её ID.
+
+    :param appointment_id: ID записи.
+    :return: True, если запись существовала и была удалена.
+    """
+    async with async_session() as session:
+        stmt = delete(Appointment).where(Appointment.id == appointment_id)
+        result = await session.execute(stmt)
+        await session.commit()
+        return result.rowcount > 0
 
 
 async def add_order(data: Dict[str, Any]) -> None:
@@ -450,6 +571,7 @@ async def get_orders_by_user(
                 "complied": order.complied,
                 "description": order.description,
                 "brand_auto": order.brand_auto,
+                "total_km": order.total_km,
                 "year_auto": order.year_auto,
                 "gos_num": order.gos_num,
                 "vin_number": order.vin_number,
