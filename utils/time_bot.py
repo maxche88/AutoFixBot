@@ -7,7 +7,7 @@ async def get_greeting():
     if 6 <= now < 12:
         greeting = "Доброе утро!"
     elif 12 <= now < 18:
-        greeting = "Добрый день"
+        greeting = "Добрый день!"
     elif 18 <= now < 23:
         greeting = "Добрый вечер!"
     else:
