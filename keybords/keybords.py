@@ -156,7 +156,7 @@ def generate_time_buttons(hours_set: set, user_id: int):
     if current_row:
         rows.append(current_row)
 
-    rows.append([InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="delete_msg")])
+    rows.append([InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="cancel")])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -183,7 +183,7 @@ def generate_duration_buttons(user_id: int):
         )
         rows.append([button])
 
-    rows.append([InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="delete_msg")])
+    rows.append([InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -237,10 +237,23 @@ def appointment_period_menu() -> InlineKeyboardMarkup:
 def appointment_action_menu(appointment_id: int, user_tg_id: int) -> InlineKeyboardMarkup:
     kb_list_4 = [
         [InlineKeyboardButton(text="✉️ Написать клиенту", callback_data=f"replay_mess:{user_tg_id}")],
+        [InlineKeyboardButton(text="🔔 Напомнить о встрече", callback_data=f"remind_mess:{appointment_id}:{user_tg_id}")],
+        [InlineKeyboardButton(text="🕦 Перенести встречу", callback_data=f"transfer_mess:{user_tg_id}")],
         [InlineKeyboardButton(text="🗑 Удалить запись", callback_data=f"del_app:{appointment_id}")],
         [InlineKeyboardButton(text="🔺 Назад 🔺", callback_data=f"cancel")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb_list_4)
+
+
+def user_answer_app(master_tg_id: int) -> InlineKeyboardMarkup:
+    kb_list = [
+        [InlineKeyboardButton(text="✅ ПРИЕДУ ВОВРЕМЯ", callback_data=f"answer_app:send_ok:{master_tg_id}")],
+        [InlineKeyboardButton(text="❌ НЕ СМОГУ ПРИЕХАТЬ", callback_data=f"answer_app:send_no:{master_tg_id}")],
+        [InlineKeyboardButton(text="🔄 ХОЧУ ПЕРЕНЕСТИ ЗАПИСЬ", callback_data=f"answer_app:app_transfer:{master_tg_id}")],
+        [InlineKeyboardButton(text="✏️ ВВЕСТИ ТЕКСТОМ", callback_data=f"answer_app_text:{master_tg_id}")],
+        [InlineKeyboardButton(text="🔺 Не отвечать 🔺", callback_data=f"cancel")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=kb_list)
 
 
 def master_order_action_menu(index: list, order_id: int = None, tg_id: int = None) -> InlineKeyboardMarkup:
@@ -262,6 +275,7 @@ def master_order_action_menu(index: list, order_id: int = None, tg_id: int = Non
         6: InlineKeyboardButton(text="🗑 УДАЛИТЬ ЗАКАЗ", callback_data=f"del_odr:{order_id}"),
         7: InlineKeyboardButton(text="♻️ ВОЗВРАТ В ТЕКУЩИЙ", callback_data=f"res_odr:{order_id}"),
         8: InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="cancel"),
+        10: InlineKeyboardButton(text="💬 Отправить сообщение", callback_data=f"ord_mess:{tg_id}")
     }
 
     inline_buttons = [[buttons_dict[idx]] for idx in index if idx in buttons_dict]
@@ -293,7 +307,6 @@ def transfer_master_keyboard(masters: List[Dict[str, str | int]]) -> InlineKeybo
 def quick_action_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ МОЖЕТЕ ЗАБИРАТЬ", callback_data="quick:answer")],
-        [InlineKeyboardButton(text="✏️ Отправить сообщение", callback_data="quick:text")],
         [InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="cancel")]
     ])
 
@@ -313,7 +326,7 @@ def user_main_menu():
 def user_personal_account():
     kb_list = [
         [InlineKeyboardButton(text="🔹 ТЕКУЩИЙ РЕМОНТ 🔹", callback_data='info_rem')],
-        [InlineKeyboardButton(text="🔹 ЗАПИСАТЬСЯ 🔹", callback_data='appointment')],
+        [InlineKeyboardButton(text="🔹 МОИ ЗАПИСИ 🔹", callback_data='appointment')],
         [InlineKeyboardButton(text="🔹 ЗАДАТЬ ВОПРОС 🔹", callback_data='send_message')],
         [InlineKeyboardButton(text="🔹 НАПИСАТЬ ОТЗЫВ 🔹", callback_data='create_comment')],
         [InlineKeyboardButton(text="🔹 МОИ ДАННЫЕ 🔹", callback_data='login')],
@@ -332,9 +345,8 @@ def user_back_personal_account() -> InlineKeyboardMarkup:
 
 def user_return_to_profile():
     kb_list = [
-        [InlineKeyboardButton(text="🔺 Назад 🔺", callback_data='back_personal_account')],
+        [InlineKeyboardButton(text="🔺 Отмена 🔺", callback_data='back_personal_account')]
     ]
-
     return InlineKeyboardMarkup(inline_keyboard=kb_list)
 
 
@@ -350,22 +362,6 @@ def user_reg_repairs():
     return InlineKeyboardMarkup(inline_keyboard=kb_list)
 
 
-# ПОДТВЕРЖДЕНИЕ ОТПРАВКИ СООБЩЕНИЯ ВСЕМ МАСТЕРАМ
-def user_confirm_send_mess():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Отправить", callback_data="confirm_support_msg")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_support_msg")]
-    ])
-
-
-# ПОДТВЕРЖДЕНИЕ ОТПРАВКИ ОТЗЫВА
-def user_confirm_send_comment():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Отправить", callback_data="confirm_comment")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_comment")]
-    ])
-
-
 # ИЗМЕНИТЬ ЛИЧНЫЕ ДАННЫЕ
 def user_edit_profile():
     kb_list = [
@@ -379,7 +375,9 @@ def user_edit_profile():
 def login_menu(index: list):
     buttons_dict = {
         5: InlineKeyboardButton(text="🔹 ПРОДОЛЖИТЬ 🔹", callback_data='car_rep_next'),
+        4: InlineKeyboardButton(text="🔺 Cкрыть 🔺", callback_data="cancel"),
         6: InlineKeyboardButton(text="🔺 Назад 🔺", callback_data='cancel'),
+        7: InlineKeyboardButton(text="🔹 МОДЕЛЬ АВТО 🔹", callback_data='edit:model_auto'),
         13: InlineKeyboardButton(text="🔹 КОНТАКТНЫЙ НОМЕР 🔹", callback_data='edit:contact'),
         14: InlineKeyboardButton(text="🔹 МАРКА АВТО 🔹", callback_data='edit:brand_auto'),
         15: InlineKeyboardButton(text="🔹 ГОД ВЫПУСКА 🔹", callback_data='edit:year_auto'),
@@ -411,11 +409,11 @@ def staff_menu(index: list, user_id: int):
         1: InlineKeyboardButton(text="🔹 ОЖИДАНИЕ 🔹", callback_data=f'await:{user_id}'),
         2: InlineKeyboardButton(text="🔹 ОТКАЗ 🔹", callback_data=f'refuse:{user_id}'),
         3: InlineKeyboardButton(text="🔹 ЗВОНИТЕ 🔹", callback_data=f'call:{user_id}'),
-        4: InlineKeyboardButton(text="📤 ОТВЕТИТЬ ТЕКСТОМ", callback_data=f'replay_mess:{user_id}'),
+        4: InlineKeyboardButton(text="💬 ОТВЕТИТЬ ТЕКСТОМ", callback_data=f'replay_mess:{user_id}'),
         5: InlineKeyboardButton(text="📆 НАЗНАЧИТЬ ВРЕМЯ", callback_data=f'set_time:{user_id}'),
         6: InlineKeyboardButton(text="🔹 НА СЕГОДНЯ 🔹", callback_data=f'today:{user_id}'),
         7: InlineKeyboardButton(text="🔹 ВЫБРАТЬ ДЕНЬ 🔹", callback_data=f'next_days:{user_id}'),
-        8: InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="delete_msg"),
+        8: InlineKeyboardButton(text="🔺 Cкрыть 🔺", callback_data="cancel"),
         9: InlineKeyboardButton(text="🔹 УДОБНОЕ ВРЕМЯ? 🔹", callback_data=f'check_time:{user_id}'),
     }
 
@@ -423,81 +421,33 @@ def staff_menu(index: list, user_id: int):
     return InlineKeyboardMarkup(inline_keyboard=inline_buttons)
 
 
-def action_buttons_orders_menu(index: list, client_tg_id: int, master_tg_id: int) -> InlineKeyboardMarkup:
+def action_buttons_orders_menu_new(index: list, tg_id: int) -> InlineKeyboardMarkup:
     """
     Универсальная клавиатура для действий мастера/админа и клиента.
-    Все кнопки используют client_tg_id и master_tg_id.
+    Все кнопки используют tg_id .
 
     :param index: Список ключей кнопок для отображения (например, [1, 2, 5]).
-    :param client_tg_id: Telegram ID клиента.
-    :param master_tg_id: Telegram ID мастера.
+    :param tg_id: Telegram ID.
     :return: InlineKeyboardMarkup
     """
     buttons_dict = {
-        # --- Кнопки выбора типа ремонта ---
-        1: InlineKeyboardButton(
-            text="🔹 ДИАГНОСТИКА 🔹",
-            callback_data=f"repair_type:diagnostic:{client_tg_id}:{master_tg_id}"
-        ),
-        2: InlineKeyboardButton(
-            text="🔹 РЕМОНТ 🔹",
-            callback_data=f"repair_type:repair:{client_tg_id}:{master_tg_id}"
-        ),
-        3: InlineKeyboardButton(
-            text="🔹 ДИАГНОСТИКА И РЕМОНТ 🔹",
-            callback_data=f"repair_type:diag_repair:{client_tg_id}:{master_tg_id}"
-        ),
-        4: InlineKeyboardButton(
-            text="🔹 ТЕХ. ОБСЛУЖИВАНИЕ 🔹",
-            callback_data=f"repair_type:to:{client_tg_id}:{master_tg_id}"
-        ),
-        5: InlineKeyboardButton(
-            text="🔹 ВВЕСТИ ТЕКСТОМ 🔹",
-            callback_data=f"repair_type:custom:{client_tg_id}:{master_tg_id}"
-        ),
-
-        # --- Кнопки заявок и подтверждений ---
-        6: InlineKeyboardButton(
-            text="✅ Создать заявку на ремонт",
-            callback_data=f"create_order:{client_tg_id}:{master_tg_id}"
-        ),
-        7: InlineKeyboardButton(
-            text="🔺 ОТПРАВИТЬ ЗАЯВКУ НА РЕМОНТ 🔺",
-            callback_data=f"send_repair_req:{client_tg_id}:{master_tg_id}"
-        ),
-
-        # --- Кнопка ответа на сообщение ---
-        8: InlineKeyboardButton(
-            text="🔹 ОТВЕТИТЬ 🔹",
-            callback_data=f"send_answer:{client_tg_id}:{master_tg_id}"
-        ),
-
-        # --- Кнопка "Назад" ---
-        9: InlineKeyboardButton(
-            text="🔺 Назад к выбору 🔺",
-            callback_data="cancel"
-        ),
-
-        # --- Кнопка "Удалить" ---
-        10: InlineKeyboardButton(
-            text="🔺 НЕ ОТВЕЧАТЬ 🔺",
-            callback_data="cancel"
-        ),
+        1: InlineKeyboardButton(text="🔹 ДИАГНОСТИКА 🔹", callback_data=f"repair_type:diagnostic:{tg_id}"),
+        2: InlineKeyboardButton(text="🔹 РЕМОНТ 🔹", callback_data=f"repair_type:repair:{tg_id}"),
+        3: InlineKeyboardButton(text="🔹 ДИАГНОСТИКА И РЕМОНТ 🔹", callback_data=f"repair_type:diag_repair:{tg_id}"),
+        4: InlineKeyboardButton(text="🔹 ТЕХ. ОБСЛУЖИВАНИЕ 🔹", callback_data=f"repair_type:to:{tg_id}"),
+        5: InlineKeyboardButton(text="🔹 ВВЕСТИ ТЕКСТОМ 🔹", callback_data=f"repair_type:custom:{tg_id}"),
+        6: InlineKeyboardButton(text="✅ Создать заявку на ремонт", callback_data=f"create_order:{tg_id}"),
+        7: InlineKeyboardButton(text="🔸 ЗАЯВКА НА РЕМОНТ 🔸", callback_data=f"send_repair_req:{tg_id}"),
+        8: InlineKeyboardButton(text="🔹 Ответить 🔹", callback_data=f"send_answer:{tg_id}"),
+        9: InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="back_personal_account"),
+        10: InlineKeyboardButton(text="🔺 Закрыть 🔺", callback_data="cancel"),
+        11: InlineKeyboardButton(text="🔺 Скрыть 🔺", callback_data="cancel"),
+        12: InlineKeyboardButton(text="♻️ ПЕРЕНЕСТИ ЗАПИСЬ", callback_data=f"transfer_entry:{tg_id}"),
+        13: InlineKeyboardButton(text="💬 НАПИСАТЬ МАСТЕРУ", callback_data=f"send_message:{tg_id}"),
     }
 
     inline_buttons = [[buttons_dict[idx]] for idx in index if idx in buttons_dict]
     return InlineKeyboardMarkup(inline_keyboard=inline_buttons)
-
-
-def clear_user_chat() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🧹 Очистить чат", callback_data="clean_client_chat")]
-    ])
-
-
-def back_button(to: str = "main") -> list:
-    """Универсальная кнопка 'Назад' — возвращает строку для inline_keyboard."""
-    return [InlineKeyboardButton(text="🔺 Назад 🔺", callback_data=f"back:{to}")]
 
 
 def check_data():
@@ -508,3 +458,6 @@ def check_data():
     return InlineKeyboardMarkup(inline_keyboard=kb_list)
 
 
+def back_button():
+    """Универсальная кнопка 'Назад'."""
+    return [InlineKeyboardButton(text="🔺 Назад 🔺", callback_data=f"cancel")]

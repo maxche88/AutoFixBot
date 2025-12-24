@@ -13,6 +13,7 @@
 """
 
 from aiogram import Router, types, F
+import asyncio
 from bot import bot
 from aiogram.filters.command import Command
 from aiogram.types import Message, CallbackQuery, FSInputFile
@@ -20,8 +21,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from keybords import keybords as kb
 from database.requests import (get_user_role, add_user, add_comment, add_grade, get_user_dict, update_user,
-                               can_mess_true, get_orders_by_user, update_order, get_visible_comments)
-from func.func_bot import get_greeting
+                               can_mess_true, get_orders_by_user, update_order, get_visible_comments,
+                               get_filter_appointments)
+from utils.time_bot import get_greeting
+from utils.utils_bot import delete_messages_after_delay
 from config import config
 from aiogram.exceptions import TelegramAPIError
 import re
@@ -54,20 +57,11 @@ class Edit(StatesGroup):
 class Mess(StatesGroup):
     """Состояния для отправки сообщения в поддержку и последующего взаимодействия."""
     mess_step = State()  # ввод текста
-    confirm_step = State()  # подтверждение
 
 
-class Repair(StatesGroup):
-    """Состояния для создания заявки на ремонт."""
-    car_repair_step1 = State()
-    car_repair_step2 = State()
-    car_repair_step3 = State()
-
-
-class Send_feedback(StatesGroup):
+class SendFeedback(StatesGroup):
     """Состояния для оставления отзыва."""
     send_text = State()
-    confirm = State()
 
 
 class ClientReply(StatesGroup):
@@ -86,6 +80,10 @@ class AcceptWork(StatesGroup):
     waiting_for_grade = State()
 
 
+class AppointmentResponse(StatesGroup):
+    waiting_for_text = State()
+
+
 # ==============================
 # АВТОРИЗАЦИЯ
 # ==============================
@@ -98,16 +96,34 @@ async def reg_one(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer("Вы уже авторизированы", show_alert=True)
         return
 
-    await bot.send_message(user_id, "Отправьте ваше ИМЯ")
-    await state.update_data(user_id=user_id)
+    auth_message_id = call.message.message_id
+
+    # Отправляем запрос на имя
+    prompt_msg = await call.message.answer("Отправьте ваше ИМЯ")
+
+    # Инициализируем список временных сообщений
+    await state.update_data(
+        user_id=user_id,
+        reg_message_ids=[auth_message_id, prompt_msg.message_id]
+    )
     await state.set_state(Reg.user_name)
+    await call.answer()
 
 
 @router.message(Reg.user_name)
 async def reg_two(message: Message, state: FSMContext) -> None:
-    """Принимает имя пользователя и запрашивает марку авто."""
+    """Принимает имя и запрашивает марку авто."""
     await state.update_data(user_name=message.text[:20], date_reg=message.date)
-    await message.answer("<b>Отправьте вашу марку авто.</b>")
+
+    # Отправляем следующий запрос
+    next_msg = await message.answer("Отправьте вашу марку авто (Без модели. Например: Toyota).")
+
+    # Обновляем список сообщений
+    data = await state.get_data()
+    message_ids = data.get("reg_message_ids", [])
+    message_ids.extend([message.message_id, next_msg.message_id])
+    await state.update_data(reg_message_ids=message_ids)
+
     await state.set_state(Reg.brand_auto)
 
 
@@ -115,23 +131,24 @@ async def reg_two(message: Message, state: FSMContext) -> None:
 async def reg_three(message: Message, state: FSMContext) -> None:
     """Принимает марку авто и запрашивает номер телефона."""
     await state.update_data(brand_auto=message.text[:20])
-    await message.answer(
-        "<b>Отправьте ваш номер телефона.</b>\n"
+
+    next_msg = await message.answer(
+        "Отправьте ваш номер телефона.\n"
         "Сотовый номер должен начинаться на 7!"
     )
+
+    data = await state.get_data()
+    message_ids = data.get("reg_message_ids", [])
+    message_ids.extend([message.message_id, next_msg.message_id])
+    await state.update_data(reg_message_ids=message_ids)
+
     await state.set_state(Reg.tel)
 
 
 @router.message(Reg.tel)
 async def reg_four(message: Message, state: FSMContext) -> None:
-    """
-    Валидирует номер телефона.
-
-    Ожидается формат: 7XXXXXXXXXX (11 цифр, начинается на 7).
-    При корректном номере — форматирует с '+' и переходит к подтверждению данных.
-    """
+    """Валидирует номер телефона."""
     user_input = message.text.strip()
-
     phone_pattern = re.compile(r'^7\d{10}$')
 
     if phone_pattern.match(user_input):
@@ -140,33 +157,58 @@ async def reg_four(message: Message, state: FSMContext) -> None:
         data = await state.get_data()
 
         caption = (
-            "<b>Убедитесь в правильности ваших данных!</b>\n"
+            "Убедитесь в правильности ваших данных!\n"
             "Эта информация требуется для обратной связи с вами.\n\n"
             f"Имя: {data.get('user_name')}\n"
             f"Марка авто: {data.get('brand_auto')}\n"
             f"Контактный телефон: {data.get('tel')}"
         )
-        await message.answer(text=caption, reply_markup=kb.check_data())
+        confirm_msg = await message.answer(text=caption, reply_markup=kb.check_data())
+
+        # Добавляем текущее сообщение + подтверждение
+        message_ids = data.get("reg_message_ids", [])
+        message_ids.extend([message.message_id, confirm_msg.message_id])
+        await state.update_data(reg_message_ids=message_ids)
+
         await state.set_state(Reg.check_state)
     else:
-        await message.answer(
+        # Ошибка отправляем уведомление, НО не выходим из состояния
+        error_msg = await message.answer(
             "Пожалуйста, введите корректный номер телефона.\n"
             "Номер должен начинаться на 7 без '+'!\n"
             "Пример: 79997773366"
         )
+        # Добавляем сообщение клиента + ошибку, чтобы удалить их в будущем
+        data = await state.get_data()
+        message_ids = data.get("reg_message_ids", [])
+        message_ids.extend([message.message_id, error_msg.message_id])
+        await state.update_data(reg_message_ids=message_ids)
 
 
 @router.callback_query(F.data == "correct", Reg.check_state)
 async def confirm_registration(call: CallbackQuery, state: FSMContext) -> None:
-    """Подтверждает регистрацию и сохраняет данные пользователя."""
+    """Подтверждает регистрацию и удаляет весь мусор."""
     await call.message.edit_reply_markup(reply_markup=None)
-    await call.message.answer_photo(photo=titul_img)
-    await call.message.answer(
-        "Поздравляем, вы авторизированы! Теперь вы можете пользоваться данным сервисом.",
-        reply_markup=kb.user_main_menu()
-    )
 
+    # Получаем все ID для удаления
     data = await state.get_data()
+    message_ids = data.get("reg_message_ids", [])
+
+    # Удаляем дубликаты и None
+    message_ids = list(set(msg_id for msg_id in message_ids if msg_id))
+
+    # Удаляем ВСЕ временные сообщения через delay
+    if message_ids:
+        _ = asyncio.create_task(
+                delete_messages_after_delay(
+                    bot=bot,
+                    chat_id=call.message.chat.id,
+                    message_ids=message_ids,
+                    delay=1
+                )
+        )
+
+    # Сохраняем пользователя
     new_user = {
         "tg_id": data.get("user_id"),
         "user_name": data.get("user_name"),
@@ -176,18 +218,46 @@ async def confirm_registration(call: CallbackQuery, state: FSMContext) -> None:
         "brand_auto": data.get("brand_auto"),
     }
 
+    # Отправляем финальные сообщения
+    await call.message.answer_photo(photo=titul_img)
+    await call.message.answer(
+        f"{'⚙'* 12}\n"
+        f"Поздравляем, вы авторизированы!\n"
+        f"Теперь вы можете пользоваться данным сервисом.",
+        reply_markup=kb.user_main_menu()
+    )
+
     await add_user(new_user)
+    await call.message.delete()
     await state.clear()
 
 
 @router.callback_query(F.data == "incorrect", Reg.check_state)
 async def cancel_registration(call: CallbackQuery, state: FSMContext) -> None:
-    """Отменяет регистрацию и возвращает пользователя к началу процесса."""
+    """Отменяет регистрацию но оставляет кнопку Авторизация"""
     await call.message.edit_reply_markup(reply_markup=None)
+
+    # Возвращаем в меню авторизации
     await call.message.answer(
         "<b>Пожалуйста, пройдите быструю Авторизацию</b>",
         reply_markup=kb.auth_menu()
     )
+
+    # Удаляем ВСЕ временные сообщения, включая fallback
+    data = await state.get_data()
+    message_ids = data.get("reg_message_ids", [])
+
+    message_ids = list(set(msg_id for msg_id in message_ids if msg_id))
+    if message_ids:
+        _ = asyncio.create_task(
+                delete_messages_after_delay(
+                    bot=bot,
+                    chat_id=call.message.chat.id,
+                    message_ids=message_ids,
+                    delay=1
+                )
+        )
+
     await state.clear()
 
 
@@ -198,7 +268,6 @@ async def cancel_registration(call: CallbackQuery, state: FSMContext) -> None:
 async def cmd_start(message: types.Message) -> None:
     user_id = message.from_user.id
     name = message.chat.first_name
-
     role = await get_user_role(user_id)
 
     if role is None:
@@ -211,22 +280,45 @@ async def cmd_start(message: types.Message) -> None:
 
     await message.answer_photo(photo=titul_img)
 
-    menu_text = (
-        f"{'⚙'* 16}\n"
-        f"<b>{await get_greeting()} {name}</b>\n"
-        "📁 Главное меню"
-    )
+    greeting = await get_greeting()
+    user_data = await get_user_dict(user_id, ["user_name"])
+    user_name = user_data["user_name"]
 
+    # Формируем текст в зависимости от роли
     if role == "admin":
+        text = (
+            "📁 <b>ПАНЕЛЬ АДМИНИСТРАТОРА</b>\n\n"
+            f"<b>{greeting} {user_name}</b>\n"
+            "Управляйте пользователями, мастерами, записями и настройками сервиса.\n\n"
+            "Выберите действие ниже 👇"
+        )
         reply_markup = kb.admin_menu()
+
     elif role == "master":
+        text = (
+            "📁 <b>ПАНЕЛЬ МАСТЕРА</b>\n\n"
+            f"<b>{greeting} {user_name}</b>\n"
+            "Принимайте заявки на ремонт, управляйте записями клиентов, "
+            "отвечайте на вопросы.\n\n"
+            "Выберите нужный раздел ниже 👇"
+        )
         reply_markup = kb.master_menu()
+
     elif role == "user":
+        text = (
+            "📁 <b>ГЛАВНОЕ МЕНЮ</b>\n\n"
+            f"<b>{greeting} {user_name}</b>\n"
+            "Здесь вы найдёте всё необходимое для взаимодействия с автосервисом: "
+            "запись, ремонт, поддержка и полезная информация.\n\n"
+            "Выберите нужный раздел ниже 👇"
+        )
         reply_markup = kb.user_main_menu()
+
     else:
+        text = "Добро пожаловать! Пройдите авторизацию."
         reply_markup = kb.auth_menu()
 
-    await message.answer(menu_text, reply_markup=reply_markup, parse_mode="HTML")
+    await message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
 
 
 # ==============================
@@ -235,9 +327,16 @@ async def cmd_start(message: types.Message) -> None:
 @router.callback_query(F.data == "account")
 async def account_menu(call: CallbackQuery) -> None:
     """Открывает главное меню личного кабинета с обновлённым текстом."""
+
+    menu_text = (
+        "📁 <b>ЛИЧНЫЙ КАБИНЕТ</b>\n\n"
+        "Управляйте своими заявками, записями, личными данными и общением с мастерами "
+        "автосервиса — всё в одном месте.\n\n"
+        "Выберите действие ниже 👇"
+    )
+
     await call.message.edit_text(
-        text=f"{'⚙'* 16}\n"
-             "📁 Личный кабинет",
+        text=menu_text,
         reply_markup=kb.user_personal_account()
     )
     await call.answer()
@@ -246,9 +345,15 @@ async def account_menu(call: CallbackQuery) -> None:
 @router.callback_query(F.data == "back_main_menu")
 async def back_to_main_menu(call: CallbackQuery):
     """Возвращает пользователя в основное меню."""
+    menu_text = (
+        "📁 <b>ГЛАВНОЕ МЕНЮ</b>\n\n"
+        "Здесь вы найдёте всё необходимое для взаимодействия с автосервисом: "
+        "запись, ремонт, поддержка и полезная информация.\n\n"
+        "Выберите нужный раздел ниже 👇"
+    )
+
     await call.message.edit_text(
-        text=f"{'⚙'* 16}\n"
-             "📁 Главное меню",
+        text=menu_text,
         reply_markup=kb.user_main_menu()
     )
     await call.answer()
@@ -256,12 +361,16 @@ async def back_to_main_menu(call: CallbackQuery):
 
 @router.callback_query(F.data == "back_personal_account")
 async def back_to_personal_account(call: CallbackQuery, state: FSMContext):
-    """Возвращает пользователя из подменю 'С выбором типа работ' в 'Личный кабинет'"""
+    """Возвращает пользователя из подменю 'ЗАПИСАТЬСЯ' в 'ЛИЧНЫЙ КАБИНЕТ'"""
     await state.clear()
+    menu_text = (
+        "📁 <b>ЛИЧНЫЙ КАБИНЕТ</b>\n\n"
+        "Управляйте своими заявками, записями, личными данными и общением с мастерами "
+        "автосервиса — всё в одном месте.\n\n"
+        "Выберите действие ниже 👇"
+    )
     await call.message.edit_text(
-        text=f"{'⚙' * 16}\n"
-             f"📁 Личный кабинет\n"
-             f"Выберите действие:",
+        text=menu_text,
         reply_markup=kb.user_personal_account()  # возвращаем в подменю личный кабинет
     )
     await call.answer()
@@ -305,6 +414,7 @@ async def info_rem(call: CallbackQuery, state: FSMContext):
             f"🆔 ID заказа: {order['id']}\n"
             f"👤 Мастер: {order['master_name']}\n"
             f"🚗 Марка авто: {order.get('brand_auto')}\n"
+            f"⚙️ Модель авто: {order['model_auto']}\n"
             f"🛞 Пробег км: {order.get('total_km')}\n"
             f"📆 Год выпуска: {order.get('year_auto')}\n"
             f"🔢 Гос. номер: {order.get('gos_num')}\n"
@@ -380,7 +490,7 @@ async def handle_accept_work(call: CallbackQuery, state: FSMContext):
     sent_order_messages = data.get("sent_order_messages", [])
 
     if isinstance(sent_order_messages, list) and sent_order_messages:
-        # Сценарий 1: клиент из "Текущий ремонт"
+        # Клиент из "Текущий ремонт"
         # Удаляем ВСЕ сообщения, включая call.message
         for msg_id in sent_order_messages:
             try:
@@ -388,7 +498,7 @@ async def handle_accept_work(call: CallbackQuery, state: FSMContext):
             except TelegramAPIError:
                 pass
     else:
-        # Сценарий 2: клиент из уведомления мастера
+        # Клиент из уведомления мастера
         # Удаляем ТОЛЬКО call.message
         try:
             await call.message.delete()
@@ -443,17 +553,60 @@ async def process_grade(call: CallbackQuery, state: FSMContext):
 
 
 # ==============================
-# ЗАПИСАТЬСЯ НА РЕМОНТ appointment
+# МОИ ЗАПИСИ appointment
 # ==============================
 # показываем тип записи
 @router.callback_query(F.data == "appointment")
-async def start_booking(call: CallbackQuery, state: FSMContext):
+async def start_booking(call: CallbackQuery):
+    user_id = call.from_user.id
+
+    # Проверяем, есть ли у пользователя активная запись
+    appointments = await get_filter_appointments(tg_id_user=user_id)
+    if appointments:
+        # Берём первую
+        appt = appointments[0]
+        master_tg_id = appt["tg_id_master"]
+
+        # Получаем данные мастера
+        master_data = await get_user_dict(master_tg_id, ["user_name", "contact"])
+        master_name = master_data["user_name"] if master_data else "—"
+        master_contact = master_data["contact"] if master_data else "—"
+
+        # Форматируем дату и время
+        date_str = appt["appointment_date"].strftime("%d.%m.%Y")
+        start_time = appt["appointment_time"].strftime("%H:%M")
+        end_time = appt["end_time"].strftime("%H:%M")
+
+        text = (
+            f"🆔 <b>Запись №{appt['id']}</b>\n\n"
+            f"👤 Имя мастера: {master_name}\n"
+            f'📱 Телеграм: <a href="tg://user?id={master_tg_id}">{master_tg_id}</a>\n'
+            f'📞 Сот. тел: <a href="tel:{master_contact}">{master_contact}</a>\n'
+            f"📆 {date_str} | 🕗 {start_time}–{end_time}\n\n"
+            "❗ У вас уже есть активная запись.\n"
+            "Вы не можете создать новую, пока не завершите текущую."
+        )
+
+        await call.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=kb.action_buttons_orders_menu_new([12, 13, 7, 9], master_tg_id)
+        )
+
+        await call.answer()
+        return
+
+    # Если ЗАПИСЕЙ НЕТ — показываем меню выбора услуги
+    menu_text = (
+        "📁 <b>ЗАПИСАТЬСЯ</b>\n\n"
+        "Выберите тип необходимых работ, чтобы мы могли предложить вам подходящее время и назначить "
+        "ответственного мастера.\n\n"
+        "Нажмите на нужный вариант ниже 👇"
+    )
     await call.message.edit_text(
-        text=f"{'⚙' * 16}\n"
-             f"📁 Записаться\n"
-             f"Выберите тип работ:",
-        reply_markup=kb.user_reg_repairs())
-    await state.set_state(Booking.choosing_service)
+        text=menu_text,
+        reply_markup=kb.user_reg_repairs()
+    )
     await call.answer()
 
 
@@ -465,7 +618,7 @@ SERVICE_NAMES = {
 
 
 # Обработчик выбора услуги
-@router.callback_query(Booking.choosing_service, F.data.startswith("service:"))
+@router.callback_query(F.data.startswith("service:"))
 async def handle_service_choice(call: CallbackQuery, state: FSMContext):
     service_key = call.data.split(":", 1)[1]
 
@@ -474,13 +627,12 @@ async def handle_service_choice(call: CallbackQuery, state: FSMContext):
         return
 
     service_name = SERVICE_NAMES[service_key]
-
     user_id = call.from_user.id
 
-    # Получаем данные пользователя из таблицы
+    # Запрашиваем все нужные поля
     user_data = await get_user_dict(
         user_id,
-        ["user_name", "rating", "brand_auto", "year_auto", "contact", "total_km", "vin_number", "gos_num"]
+        ["user_name", "rating", "brand_auto", "model_auto", "year_auto", "contact", "total_km", "vin_number", "gos_num"]
     )
 
     if not user_data:
@@ -488,28 +640,72 @@ async def handle_service_choice(call: CallbackQuery, state: FSMContext):
         await state.clear()
         return
 
-    # Сохраняем выбранный тип услуги и данные клиента
-    await state.update_data(
-        chosen_service=service_name,
-        user_data=user_data
-    )
+    # Определяем обязательные поля (те, что не могут быть "-" или пустыми)
+    required_fields = {
+        "user_name": "Имя",
+        "brand_auto": "Марка авто",
+        "model_auto": "Модель авто",
+        "year_auto": "Год выпуска",
+        "contact": "Контактный номер",
+        "gos_num": "Гос. номер"
+    }
 
-    # Формируем сообщение с данными
+    # Проверяем, заполнены ли все обязательные поля (и не равны "-")
+    missing_fields = []
+    for field_key, field_label in required_fields.items():
+        value = user_data.get(field_key, "").strip()
+        if not value or value == "-":
+            missing_fields.append(field_label)
+
+    # Формируем базовый текст с данными
     preview_text = (
-        f"📋 Проверьте ваши данные:\n\n"
-        f"👤 Имя: {user_data['user_name']}\n"
-        f'📞 Сот.тел: {user_data["contact"]}\n'
-        f"🚗 Марка авто: {user_data['brand_auto']}\n"
-        f"📆 Год выпуска: {user_data['year_auto']}\n"
-        f"ℹ️ VIN: {user_data['vin_number']}\n"
-        f"🔢 Гос. номер: {user_data['gos_num']}\n"
+        f"📋 Ваши данные:\n\n"
+        f"👤 Имя: {user_data.get('user_name', '-')}\n"
+        f"📞 Сот.тел: {user_data.get('contact', '-')}\n"
+        f"🚗 Марка авто: {user_data.get('brand_auto', '-')}\n"
+        f"⚙️ Модель авто: {user_data.get('model_auto', '-')}\n"
+        f"📆 Год выпуска: {user_data.get('year_auto', '-')}\n"
+        f"🛞 Пробег: {user_data.get('total_km', '-')}\n"
+        f"ℹ️ VIN: {user_data.get('vin_number', '-')}\n"
+        f"🔢 Гос. номер: {user_data.get('gos_num', '-')}\n"
         f"🔧 Тип услуги: {service_name}\n\n"
-        f"Если всё верно — нажмите «Записаться».\n"
-        "Мастер свяжется с вами, чтобы уточнить удобное время."
     )
 
-    await call.message.answer(preview_text, reply_markup=kb.login_menu([19, 6]))
-    await state.set_state(Booking.confirming_data)
+    if missing_fields:
+        # Есть незаполненные поля НЕ ПОКАЗЫВАЕМ кнопку "Записаться"
+        preview_text += (
+            "❗ <b>Некоторые обязательные поля не заполнены:</b>\n"
+            + "\n".join(f"• {field}" for field in missing_fields) +
+            "\n\n"
+            "🔹 Чтобы записаться на приём, сначала заполните профиль:\n"
+            "<b>ЛИЧНЫЙ КАБИНЕТ → МОИ ДАННЫЕ → ИЗМЕНИТЬ ДАННЫЕ</b>"
+        )
+        # Показываем ТОЛЬКО кнопку "Назад"
+        await call.message.answer(
+            preview_text,
+            parse_mode="HTML",
+            reply_markup=kb.login_menu([6])
+        )
+
+    else:
+        # Все поля заполнены — ПОКАЗЫВАЕМ подтверждение и кнопку "Записаться"
+        preview_text += (
+            "Если всё верно — нажмите «Записаться».\n"
+            "Мастер свяжется с вами, чтобы уточнить удобное время."
+        )
+
+        await call.message.answer(
+            preview_text,
+            reply_markup=kb.login_menu([19, 6])  # "Записаться" + "Назад"
+        )
+
+        await state.update_data(
+            chosen_service=service_name,
+            user_data=user_data
+        )
+        await state.set_state(Booking.confirming_data)
+
+    await call.answer()
 
 
 # Обработчик "Подтвердить"
@@ -534,6 +730,7 @@ async def confirm_booking(call: CallbackQuery, state: FSMContext):
         f'📞 Сот.тел: <a href="tel:{contact}">{contact}</a>\n'
         f"⭐️ Рейтинг: {user_data['rating']}\n"
         f"🚗 Марка авто: {user_data['brand_auto']}\n"
+        f"⚙️ Модель авто: {user_data['model_auto']}\n"
         f"📆 Год выпуска: {user_data['year_auto']}\n"
         f"🛞 Пробег км: {user_data['total_km']}\n"
         f"⚙️ Тип услуги: {service_name}\n\n"
@@ -548,44 +745,233 @@ async def confirm_booking(call: CallbackQuery, state: FSMContext):
             chat_id=master_id,
             text=formatted_request,
             parse_mode="HTML",
-            reply_markup=kb.staff_menu([1, 2, 3, 9, 4, 5], user_id=user_id)
+            reply_markup=kb.staff_menu([1, 2, 3, 9, 4, 5, 8], user_id=user_id)
         )
 
     await call.answer("✅ Заявка отправлена! Мастер свяжется с вами в ближайшее время.", show_alert=True)
     await state.clear()
-    await call.answer()
-
-
-@router.callback_query(F.data == "cancel")
-async def cancel_booking(call: CallbackQuery, state: FSMContext):
-    await state.clear()
     await call.message.delete()
+
+
+# ОТВЕТ КЛИЕНТА НА СООБЩЕНИЕ (НАПОМИНАНИЕ)
+
+# Словарь для отображения ответов клиента в читаемом виде для мастера
+ANSWER_TEMPLATES = {
+    "send_ok": "✅ Клиент подтвердил запись: «Приеду вовремя».",
+    "send_no": "❌ Клиент отменил запись: «Не сможет приехать».",
+    "app_transfer": "🔄 Клиент хочет перенести запись."
+}
+
+
+# ОТВЕТ КЛИЕНТА. БЫСТРЫЕ ОТВЕТЫ
+@router.callback_query(F.data.startswith("answer_app:"))
+async def handle_client_appointment_response(call: CallbackQuery):
+    data = call.data
+
+    parts = data.split(":")
+    if len(parts) != 3:
+        await call.answer("❌ Некорректные данные.", show_alert=True)
+        return
+
+    _, action, master_tg_id_str = parts
+
+    if action not in ANSWER_TEMPLATES:
+        await call.answer("❌ Неизвестный тип ответа.", show_alert=True)
+        return
+
+    try:
+        master_tg_id = int(master_tg_id_str)
+    except ValueError:
+        await call.answer("❌ Некорректный ID мастера.", show_alert=True)
+        return
+
+    client_id = call.from_user.id
+    data_user = await get_user_dict(client_id, ["user_name"])
+    client_name = data_user["user_name"]
+
+    # Формируем сообщение для мастера
+    message_for_master = (
+        f"🔔 Ответ от клиента:\n"
+        f"👤 Имя: {client_name}\n"
+        f"Телеграм ID: {client_id}"
+        f"{ANSWER_TEMPLATES[action]}"
+    )
+
+    # Отправляем сообщение мастеру
+    await bot.send_message(chat_id=master_tg_id, text=message_for_master)
+
+    # Подтверждаем нажатие
+    await call.answer(f"✔️ Ваш ответ отправлен мастеру.\n\n{ANSWER_TEMPLATES[action]}")
+
+
+# ОТВЕТ КЛИЕНТА. ОТВЕТ ТЕКСТОМ
+@router.callback_query(F.data.startswith("answer_app_text:"))
+async def handle_in_text_request(call: CallbackQuery, state: FSMContext):
+    parts = call.data.split(":")
+    if len(parts) != 2:
+        await call.answer("❌ Некорректные данные.", show_alert=True)
+        return
+
+    master_tg_id = parts[1]
+
+    # Сохраняем данные и инициализируем список ID сообщений
+    await state.update_data(
+        master_tg_id=master_tg_id,
+        chat_id=call.message.chat.id,
+    )
+
+    # Просим ввести текст
+    prompt_msg = await call.message.answer("✏️ Пожалуйста, введите ваше сообщение мастеру:")
+
+    # Добавляем ID нового сообщения в состояние
+    await state.set_state(AppointmentResponse.waiting_for_text)
+    await state.update_data(message_ids=[prompt_msg.message_id])
     await call.answer()
+
+
+@router.message(AppointmentResponse.waiting_for_text)
+async def handle_custom_text_response(message: Message, state: FSMContext):
+    user_text = message.text
+
+    data = await state.get_data()
+    master_tg_id = data.get("master_tg_id")
+    chat_id = data.get("chat_id")
+    message_ids = data.get("message_ids", [])
+
+    # Добавляем сообщение пользователя
+    message_ids.append(message.message_id)
+
+    if not user_text or not user_text.strip():
+        # Отправляем ошибку
+        error_msg = await message.answer("📝 Сообщение не может быть пустым. Пожалуйста, введите текст:")
+        message_ids.append(error_msg.message_id)
+        await state.update_data(message_ids=message_ids)
+        return
+
+    # Проверка master_tg_id
+    try:
+        master_tg_id = int(master_tg_id)
+    except (ValueError, TypeError):
+        await state.clear()
+        return
+
+    # Отправка мастеру
+    client_name = message.from_user.full_name
+    client_id = message.from_user.id
+    msg_for_master = (
+        f"📨 Ответ от клиента\n\n"
+        f"📱 tg_id: {client_id}\n"
+        f"👤 Имя: {client_name} \n\n"
+        f"💬 {user_text}"
+    )
+
+    try:
+        await bot.send_message(chat_id=master_tg_id, text=msg_for_master)
+    except TelegramAPIError:
+        pass  # игнорируем
+
+    # Подтверждение клиенту
+    success_msg = await message.answer("✅ Сообщение отправлено!")
+    message_ids.append(success_msg.message_id)
+
+    # Сохраняем финальный список
+    await state.update_data(message_ids=message_ids)
+
+    # Запускаем удаление всех сообщений в контексте данного чата
+    _ = asyncio.create_task(delete_messages_after_delay(bot=bot, chat_id=chat_id, message_ids=message_ids))
+
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("transfer_entry:"))
+async def handle_transfer_entry_request(call: CallbackQuery):
+    """
+    Обрабатывает нажатие кнопки 'Перенести запись'.
+    Отправляет мастеру быстрое сообщение от клиента.
+    """
+    parts = call.data.split(":", 1)
+    if len(parts) != 2:
+        await call.answer("❌ Некорректный формат данных.", show_alert=True)
+        return
+
+    try:
+        master_tg_id = int(parts[1])
+    except ValueError:
+        await call.answer("❌ Некорректный ID мастера.", show_alert=True)
+        return
+
+    # Получаем данные клиента
+    client_tg_id = call.from_user.id
+    client_data = await get_user_dict(client_tg_id, ["user_name"])
+    client_name = client_data["user_name"]
+
+    # Формируем сообщение для мастера
+    message_for_master = (
+        f"♻️ <b>Запрос на перенос записи</b>\n"
+        f"👤 Имя: {client_name}\n"
+        f"📱 tg_id: {client_tg_id}\n\n"
+        f"«Здравствуйте, приехать не могу — нужно перенести запись!»"
+    )
+
+    # Отправляем мастеру
+    try:
+        await bot.send_message(chat_id=master_tg_id, text=message_for_master, parse_mode="HTML")
+    except TelegramAPIError:
+        # Игнорируем ошибку
+        pass
+
+    # Уведомляем клиента
+    await call.answer("✅ Ваш запрос на перенос записи отправлен мастеру!", show_alert=True)
+
+    # Удаляем сообщение с кнопкой (как в других обработчиках)
+    try:
+        await call.message.delete()
+    except TelegramAPIError:
+        pass
 
 
 # ==============================
 # ЗАДАТЬ ВОПРОС
 # ==============================
-@router.callback_query(F.data == "send_message")
-async def initiate_support_message(call: CallbackQuery, state: FSMContext) -> None:
-    """Начинает процесс отправки сообщения."""
-    name = call.from_user.first_name
-    # Сохраняем ID этого сообщения, чтобы потом его отредактировать
-    await state.update_data(prompt_message_id=call.message.message_id)
+@router.callback_query(F.data.startswith("send_message"))
+async def initiate_support_message(call: CallbackQuery, state: FSMContext):
+    """
+    Начинает процесс отправки сообщения:
+    - если в callback_data есть ID мастера → сообщение отправится только ему,
+    - иначе — всем мастерам с can_mess=True.
+    """
+    parts = call.data.split(":", 1)
+    master_tg_id = None
+    if len(parts) == 2:
+        try:
+            master_tg_id = int(parts[1])
+        except ValueError:
+            pass  # игнорируем некорректный ID
+
+    user_id = call.from_user.id
+    user_data = await get_user_dict(user_id, ["user_name"])
+    user_name = user_data["user_name"]
+
+    menu_text = (
+        "📁 <b>ЗАДАТЬ ВОПРОС</b>\n\n"
+        f"{user_name}, опишите ваш вопрос максимально подробно — это поможет мастерам быстрее понять суть и дать "
+        f"точный ответ.\n\n"
+        "⚠️ Просим соблюдать уважительный тон и воздерживаться от нецензурной лексики.\n\n"
+        "Введите ваше сообщение ниже в поле ввода чата и отправьте."
+    )
+
     await call.message.edit_text(
-        text=f"{'⚙' * 16}\n"
-             f"📁 Задать вопрос\n"
-             f"{name}, введите ваше сообщение.\n"
-             f"Соблюдайте цензуру!",
+        text=menu_text,
         reply_markup=kb.user_return_to_profile()
     )
+    await state.update_data(master_tg_id=master_tg_id)  # ← сохраняем ID
     await state.set_state(Mess.mess_step)
     await call.answer()
 
 
 @router.message(Mess.mess_step)
-async def save_support_message(message: Message, state: FSMContext) -> None:
-    """Сохраняет текст и ЗАМЕНЯЕТ сообщение на подтверждение."""
+async def save_and_send_support_message(message: Message, state: FSMContext) -> None:
+    """Отправляет сообщение либо указанному мастеру, либо всем мастерам."""
     if not message.text or not message.text.strip():
         await message.answer("❌ Пожалуйста, введите непустое сообщение.")
         return
@@ -593,7 +979,7 @@ async def save_support_message(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id
     user_data = await get_user_dict(
         user_id,
-        ["user_name", "rating", "brand_auto", "year_auto", "contact", "total_km"]
+        ["user_name", "rating", "brand_auto", "model_auto", "year_auto", "contact", "total_km"]
     )
 
     if not user_data:
@@ -601,123 +987,74 @@ async def save_support_message(message: Message, state: FSMContext) -> None:
         await state.clear()
         return
 
-    # Сохраняем НОВОЕ: ID сообщения пользователя
-    await state.update_data(
-        support_text=message.text[:100],
-        user_id=user_id,
-        user_data=user_data,
-        user_message_id=message.message_id  # сохраняем ID введенного текста
-    )
-
+    # Получаем ID целевого мастера (если был указан)
     data = await state.get_data()
-    prompt_msg_id = data.get("prompt_message_id")
+    master_tg_id = data.get("master_tg_id")
 
-    if prompt_msg_id:
-        await message.bot.edit_message_text(
-            chat_id=message.chat.id,
-            message_id=prompt_msg_id,
-            text="Подтвердите отправку сообщения:",
-            reply_markup=kb.user_confirm_send_mess()
-        )
-        await state.set_state(Mess.confirm_step)
-    else:
-        sent = await message.answer(
-            "Подтвердите отправку сообщения:",
-            reply_markup=kb.user_confirm_send_mess()
-        )
-        await state.update_data(prompt_message_id=sent.message_id)
-        await state.set_state(Mess.confirm_step)
-
-
-@router.callback_query(Mess.confirm_step, F.data == "confirm_support_msg")
-async def confirm_support_message(call: CallbackQuery, state: FSMContext) -> None:
-    """Отправляет сообщение мастерам и показывает alert."""
-    data = await state.get_data()
-    message_text = data.get("support_text")
-    user_id = data.get("user_id")
-    user_data = data.get("user_data")
-    prompt_msg_id = data.get("prompt_message_id")
-    user_msg_id = data.get("user_message_id")
-
-    if not message_text or not user_data:
-        await call.answer("❌ Данные утеряны. Начните заново.", show_alert=True)
-        await state.clear()
-        return
-
+    # Отправка мастерам
     contact = user_data['contact']
 
-    # Формируем сообщение для мастеров
-    formatted_message = (
-        f"📬 СООБЩЕНИЕ\n\n"
-        f"👤 Имя: {user_data['user_name']}\n"
-        f"⭐️ Рейтинг: {user_data['rating']}\n"
-        f"🚗 Марка авто: {user_data['brand_auto']}\n"
-        f"📆 Год выпуска: {user_data['year_auto']}\n"
-        f"🛞 Пробег км: {user_data['total_km']}\n"
-        f'📱 Телеграм ID: <a href="tg://user?id={user_id}">{user_id}</a>\n'
-        f'📞 Контакт: <a href="tel:{contact}">{contact}</a>\n'
-        f"📨 Сообщение:\n\n{message_text}"
-    )
+    # Основная логика отправки
+    recipients = []
 
-    # Отправляем мастерам
-    masters = await can_mess_true()
-    for master_id in masters:
-        await bot.send_message(
-            chat_id=master_id,
-            text=formatted_message,
-            reply_markup=kb.staff_menu([1, 2, 3, 9, 4, 5], user_id=user_id)
-        )
+    if master_tg_id is not None:
+        # Отправляем ТОЛЬКО указанному мастеру
+        recipients = [master_tg_id]
 
-    # ✅ УДАЛЯЕМ сообщение пользователя (его текст вопроса)
-    if user_msg_id:
-        await call.bot.delete_message(
-            chat_id=call.message.chat.id,
-            message_id=user_msg_id
-        )
-
-    # ✅ Показываем alert
-    await call.answer("✅ Ваше сообщение отправлено!\nОжидайте ответа.", show_alert=True)
-
-    # 🔁 Возвращаемся в личный кабинет в том же сообщении
-    await call.bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=prompt_msg_id,
-        text=f"{'⚙' * 16}\n"
-             f"📁 Личный кабинет:\nВыберите действие:",
-        reply_markup=kb.user_personal_account()
-    )
-
-    await state.clear()
-
-
-@router.callback_query(Mess.confirm_step, F.data == "cancel_support_msg")
-async def cancel_support_message(call: CallbackQuery, state: FSMContext) -> None:
-    data = await state.get_data()
-    prompt_msg_id = data.get("prompt_message_id")
-    user_msg_id = data.get("user_message_id")
-
-    await call.answer("❌ Отправка отменена.", show_alert=True)
-
-    # Удаляем сообщение пользователя
-    if user_msg_id:
-        await call.bot.delete_message(call.message.chat.id, user_msg_id)
-
-    # 🔁 Возвращаемся в личный кабинет
-    if prompt_msg_id:
-        await call.bot.edit_message_text(
-            chat_id=call.message.chat.id,
-            message_id=prompt_msg_id,
-            text=f"{'⚙' * 16}\n"
-                 f"📁 Личный кабинет:\nВыберите действие:",
-            reply_markup=kb.user_personal_account()
+        formatted_message = (
+            f"🔔 СООБЩЕНИЕ ОТ ЗАПИСАННОГО КЛИЕНТА\n\n"
+            f"👤 Имя: {user_data['user_name']}\n"
+            f"⭐️ Рейтинг: {user_data['rating']}\n"
+            f"🚗 Марка авто: {user_data['brand_auto']}\n"
+            f"⚙️ Модель авто: {user_data['model_auto']}\n"
+            f'📱 Телеграм ID: <a href="tg://user?id={user_id}">{user_id}</a>\n'
+            f'📞 Контакт: <a href="tel:{contact}">{contact}</a>\n'
+            f"💬 Сообщение:\n\n{message.text[:100]}"
         )
     else:
-        await call.message.edit_text(
-            text=f"{'⚙' * 16}\n"
-                 f"📁 Личный кабинет:\nВыберите действие:",
-            reply_markup=kb.user_personal_account()
+        # Отправляем ВСЕМ мастерам с can_mess=True
+        recipients = await can_mess_true()
+
+        formatted_message = (
+            f"🔔 СООБЩЕНИЕ ОТ ПОЛЬЗОВАТЕЛЯ\n\n"
+            f"👤 Имя: {user_data['user_name']}\n"
+            f"⭐️ Рейтинг: {user_data['rating']}\n"
+            f"🚗 Марка авто: {user_data['brand_auto']}\n"
+            f"⚙️ Модель авто: {user_data['model_auto']}\n"
+            f"📆 Год выпуска: {user_data['year_auto']}\n"
+            f"🛞 Пробег км: {user_data['total_km']}\n"
+            f'📱 Телеграм ID: <a href="tg://user?id={user_id}">{user_id}</a>\n'
+            f'📞 Контакт: <a href="tel:{contact}">{contact}</a>\n'
+            f"💬 Сообщение:\n\n{message.text[:100]}"
         )
-    await state.clear()
+
+    # Отправка
+    for master_id in recipients:
+        try:
+            await bot.send_message(
+                chat_id=master_id,
+                text=formatted_message,
+                reply_markup=kb.staff_menu([1, 2, 3, 9, 4, 5, 8], user_id=user_id)
+            )
+
+        except TelegramAPIError:
+            pass
+
+        # Подтверждение клиенту
+        success_msg = await message.answer("✅ Ваше сообщение отправлено!\nОжидайте ответа.")
+
+        # Удаляем сообщения
+        message_ids_to_delete = [message.message_id, success_msg.message_id]
+        _ = asyncio.create_task(
+            delete_messages_after_delay(
+                bot=bot,
+                chat_id=message.chat.id,
+                message_ids=message_ids_to_delete,
+                delay=config.TEMP_MESSAGE_LIFETIME_SEC
+            )
+        )
+
+        await state.clear()
 
 
 # ==============================
@@ -726,142 +1063,75 @@ async def cancel_support_message(call: CallbackQuery, state: FSMContext) -> None
 @router.callback_query(F.data == "create_comment")
 async def start_comment(call: CallbackQuery, state: FSMContext) -> None:
     """Начинает процесс оставления отзыва."""
-    name = call.from_user.first_name
+    user_id = call.from_user.id
+    user_data = await get_user_dict(user_id, ["user_name"])
+    user_name = user_data["user_name"]
+    await state.update_data(user_name=user_name, user_id=user_id)
 
-    # Сохраняем ID сообщения для последующего редактирования и возврата
-    await state.update_data(prompt_message_id=call.message.message_id)
+    menu_text = (
+        "📁 <b>НАПИСАТЬ ОТЗЫВ</b>\n\n"
+        f"{user_name}, поделитесь своим мнением об автосервисе — ваш отзыв поможет другим клиентам "
+        "и позволит нам улучшать качество обслуживания.\n\n"
+        "Напишите честно и по делу. Спасибо, что выбираете нас!"
+    )
 
     await call.message.edit_text(
-        text=f"{'⚙' * 16}\n"
-             f"📁 Написать отзыв\n"
-             f"{name}, напишите свой отзыв об СТО.",
-        reply_markup=kb.user_return_to_profile()  # кнопка "Назад" в личный кабинет
+        text=menu_text,
+        reply_markup=kb.user_return_to_profile()
     )
-    await state.set_state(Send_feedback.send_text)
+    await state.set_state(SendFeedback.send_text)
     await call.answer()
 
 
-@router.message(Send_feedback.send_text)
-async def save_comment_text(message: Message, state: FSMContext) -> None:
-    """Сохраняет текст отзыва и предлагает подтвердить."""
+@router.message(SendFeedback.send_text)
+async def save_comment_text(message: Message, state: FSMContext):
+    message_ids_to_delete = [message.message_id]
+    success = False
+    response_msg = None
+
+    # Проверка на пустой отзыв
     if not message.text or not message.text.strip():
-        await message.answer("❌ Отзыв не может быть пустым.")
-        return
+        response_msg = await message.answer("❌ Отзыв не может быть пустым.")
+        message_ids_to_delete.append(response_msg.message_id)
+    else:
+        # Получаем данные пользователя
+        data = await state.get_data()
+        user_id = data.get("user_id") or message.from_user.id
+        user_name = data.get("user_name") or message.from_user.full_name
+        review_text = message.text[:128]
 
-    # Сохраняем данные, включая ID сообщения пользователя
-    await state.update_data(
-        user_message_id=message.message_id,
-        user_id=message.from_user.id,
-        user_name=message.from_user.full_name,
-        send_text=message.text[:128]
+        try:
+            comment_id = await add_comment({
+                "tg_id": user_id,
+                "user_name": user_name,
+                "text": review_text
+            })
+
+            success = bool(comment_id)
+
+        except Exception:
+            success = False
+
+        if success:
+            response_msg = await message.answer(
+                "✅ Спасибо за ваш отзыв!\nОн будет отображаться для всех пользователей."
+            )
+        else:
+            response_msg = await message.answer(
+                "❌ Не удалось отправить отзыв. Попробуйте позже."
+            )
+        message_ids_to_delete.append(response_msg.message_id)
+
+    # ЕДИНСТВЕННЫЙ вызов удаления
+    _ = asyncio.create_task(
+        delete_messages_after_delay(
+            bot=bot,
+            chat_id=message.chat.id,
+            message_ids=message_ids_to_delete
+        )
     )
 
-    data = await state.get_data()
-    prompt_msg_id = data.get("prompt_message_id")
-
-    if prompt_msg_id:
-        # Редактируем исходное сообщение на "Подтвердите..."
-        await message.bot.edit_message_text(
-            chat_id=message.chat.id,
-            message_id=prompt_msg_id,
-            text="❓ Подтвердите отправку отзыва:",
-            reply_markup=kb.user_confirm_send_comment()
-        )
-        await state.set_state(Send_feedback.confirm)
-    else:
-        sent = await message.answer(
-            "❓ Подтвердите отправку отзыва:",
-            reply_markup=kb.user_confirm_send_comment()
-        )
-        await state.update_data(prompt_message_id=sent.message_id)
-        await state.set_state(Send_feedback.confirm)
-
-
-@router.callback_query(Send_feedback.confirm, F.data == "confirm_comment")
-async def confirm_comment(call: CallbackQuery, state: FSMContext) -> None:
-    """Сохраняет отзыв и завершает процесс."""
-    data = await state.get_data()
-    send_text = data.get("send_text")
-    user_id = data.get("user_id")
-    user_name = data.get("user_name")
-    prompt_msg_id = data.get("prompt_message_id")
-    user_msg_id = data.get("user_message_id")
-
-    if not send_text or not user_id or not user_name:
-        await call.answer("❌ Данные утеряны. Попробуйте снова.", show_alert=True)
-        await state.clear()
-        return
-
-    # Сохраняем отзыв в БД
-    comment_id = await add_comment({
-        "tg_id": user_id,
-        "user_name": user_name,
-        "text": send_text
-    })
-
-    await call.bot.delete_message(call.message.chat.id, user_msg_id)
-
-    # Показываем alert с ID отзыва
-    await call.answer(f"✅ Спасибо за ваш отзыв!\nID отзыва: {comment_id}", show_alert=True)
-
-    # Возвращаемся в личный кабинет
-    if prompt_msg_id:
-        await call.bot.edit_message_text(
-            chat_id=call.message.chat.id,
-            message_id=prompt_msg_id,
-            text=f"{'⚙' * 16}\n"
-                 f"📁 Личный кабинет:\nВыберите действие:",
-            reply_markup=kb.user_personal_account()
-        )
-    else:
-        await call.message.edit_text(
-            text=f"{'⚙' * 16}\n"
-                 f"📁 Личный кабинет:\nВыберите действие:",
-            reply_markup=kb.user_personal_account()
-        )
     await state.clear()
-
-
-@router.callback_query(Send_feedback.confirm, F.data == "cancel_comment")
-async def cancel_comment(call: CallbackQuery, state: FSMContext) -> None:
-    """Отменяет отправку отзыва."""
-    data = await state.get_data()
-    prompt_msg_id = data.get("prompt_message_id")
-    user_msg_id = data.get("user_message_id")
-
-    # Удаляем сообщение пользователя (если было)
-    if user_msg_id:
-        await call.bot.delete_message(call.message.chat.id, user_msg_id)
-
-    # Возвращаемся в личный кабинет
-    if prompt_msg_id:
-        await call.bot.edit_message_text(
-            chat_id=call.message.chat.id,
-            message_id=prompt_msg_id,
-            text=f"{'⚙' * 16}\n"
-                 f"📁 Личный кабинет:\nВыберите действие:",
-            reply_markup=kb.user_personal_account()
-        )
-    else:
-        await call.message.edit_text(
-            text=f"{'⚙' * 16}\n"
-                 f"📁 Личный кабинет:\nВыберите действие:",
-            reply_markup=kb.user_personal_account()
-        )
-
-    await call.answer("❌ Отзыв не отправлен.", show_alert=True)
-    await state.clear()
-
-
-# ==============================
-# ПОСТАВИТЬ ОЦЕНКУ МАСТЕРУ
-# ==============================
-@router.callback_query(F.data == "cancel")
-async def cancel_fsm(call: CallbackQuery, state: FSMContext) -> None:
-    """Отменяет текущее FSM-состояние и удаляет сообщение с клавиатурой."""
-    await call.message.delete()
-    await state.clear()
-    await call.answer()
 
 
 # ==============================
@@ -872,7 +1142,7 @@ async def show_user_data(call: CallbackQuery) -> None:
     user_id = call.from_user.id
     user_data = await get_user_dict(
         user_id,
-        ["user_name", "brand_auto", "year_auto", "gos_num", "vin_number", "rating", "contact", "total_km"]
+        ["user_name", "brand_auto", "model_auto", "year_auto", "gos_num", "vin_number", "rating", "contact", "total_km"]
     )
 
     text = (
@@ -881,6 +1151,7 @@ async def show_user_data(call: CallbackQuery) -> None:
         f"📞 Контактный номер: {user_data['contact']}\n"
         f"⭐ Рейтинг: {user_data['rating']}\n"
         f"🚗 Марка авто: {user_data['brand_auto']}\n"
+        f"⚙️ Модель авто: {user_data['model_auto']}\n"
         f"🛞 Пробег км: {user_data['total_km']}\n"
         f"📆 Год выпуска: {user_data['year_auto']}\n"
         f"🔢 Гос. номер: {user_data['gos_num']}\n"
@@ -905,12 +1176,15 @@ async def show_user_data(call: CallbackQuery) -> None:
 # РЕДАКТИРОВАНИЕ ПРОФИЛЯ
 # ==============================
 @router.callback_query(F.data == "edit_menu")
-async def edit_menu(call: CallbackQuery) -> None:
+async def edit_menu(call: CallbackQuery, state: FSMContext) -> None:
     """Открывает меню редактирования данных."""
-    await call.message.answer(
+    prompt_msg = await call.message.answer(
         "Выберите данные для изменения или дополнения:",
-        reply_markup=kb.login_menu([13, 14, 15, 18, 16, 17])
+        reply_markup=kb.login_menu([13, 14, 7, 15, 18, 16, 17, 6])
     )
+    # Новый список временных сообщений
+    await state.update_data(edit_message_ids=[prompt_msg.message_id])
+    await call.answer()
 
 
 @router.callback_query(F.data.startswith("edit"))
@@ -919,31 +1193,71 @@ async def start_edit_field(call: CallbackQuery, state: FSMContext) -> None:
     field_map = {
         "user_name": "Имя",
         "brand_auto": "Марка авто",
+        "model_auto": "Модель авто",
         "year_auto": "Год выпуска",
         "gos_num": "Гос. номер",
         "vin_number": "VIN номер",
         "contact": "Контактный номер"
     }
 
+    # Удаляем клавиатуру с выбором полей
     await call.message.edit_reply_markup(reply_markup=None)
+
     field_key = call.data.split(":")[1]
     await state.update_data(data_type=field_key)
-    await call.message.answer(
+
+    # Отправляем запрос на ввод
+    input_msg = await call.message.answer(
         f"Введите {field_map[field_key]} (до 20 символов):"
     )
+
+    # Добавляем новое сообщение в список
+    data = await state.get_data()
+    message_ids = data.get("edit_message_ids", [])
+    message_ids.append(input_msg.message_id)
+    await state.update_data(edit_message_ids=message_ids)
+
     await state.set_state(Edit.edit_login)
+    await call.answer()
 
 
 @router.message(Edit.edit_login)
 async def save_edited_field(message: Message, state: FSMContext) -> None:
-    """Сохраняет обновлённое значение поля в базу данных."""
-    user_id = message.chat.id
+    """Сохраняет обновлённое значение поля и удаляет временные сообщения."""
+    user_id = message.from_user.id
     data = await state.get_data()
-    field_name = data["data_type"]
-    new_value = message.text[:20]
+    field_name = data.get("data_type")
 
+    if not field_name:
+        await message.answer("❌ Сессия устарела. Повторите попытку.")
+        await state.clear()
+        return
+
+    # Сохраняем данные в БД
+    new_value = message.text[:20]
     await update_user(user_id, field_name, new_value)
-    await message.answer("Данные успешно обновлены!")
+
+    # Отправляем подтверждение
+    success_msg = await message.answer("Данные успешно обновлены!")
+
+    # Собираем все сообщения для удаления:
+    message_ids = data.get("edit_message_ids", [])
+    message_ids.append(message.message_id)      # сообщение пользователя с текстом
+    message_ids.append(success_msg.message_id)  # "Данные успешно обновлены!"
+
+    # Удаляем дубликаты и None
+    message_ids = list(set(msg_id for msg_id in message_ids if msg_id))
+
+    # Запускаем автоматическое удаление
+    if message_ids:
+        _ = asyncio.create_task(
+                delete_messages_after_delay(
+                    bot=bot,
+                    chat_id=message.chat.id,
+                    message_ids=message_ids
+                )
+            )
+
     await state.clear()
 
 
@@ -1030,23 +1344,21 @@ async def show_contacts(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("send_repair_req:"))
 async def handle_send_repair_request(call: CallbackQuery):
     parts = call.data.split(":")
-    if len(parts) != 3:
+    if len(parts) != 2:
         await call.answer("❌ Ошибка запроса", show_alert=True)
         return
 
+    user_tg_id = call.from_user.id
+
     try:
-        user_tg_id = int(parts[1])
-        master_tg_id = int(parts[2])
+        master_tg_id = int(parts[1])
     except ValueError:
         await call.answer("❌ Некорректные данные", show_alert=True)
         return
 
     # Проверяем, что клиент существует
     user_data = await get_user_dict(user_tg_id)
-    if not user_data:
-        await call.answer("❌ Клиент не найден", show_alert=True)
-        return
-    print()
+
     # Отправляем мастеру сообщение с кнопкой создания заказа
     await bot.send_message(
         chat_id=master_tg_id,
@@ -1056,40 +1368,32 @@ async def handle_send_repair_request(call: CallbackQuery):
             f"📱 Телеграм: {user_data['tg_id']}\n"
             f"📞 Сот. тел.: {user_data['contact']}\n"
             f"🚗 Марка авто: {user_data['brand_auto']} \n"
+            f"⚙️ Модель авто: {user_data['model_auto']}\n"
             f"🛞 Пробег км: {user_data['total_km']} \n"
             f"📆 Год выпуска: {user_data['year_auto']}\n"
             f"ℹ️ VIN: {user_data['vin_number']}\n"
             f"🔢 Гос. номер: {user_data['gos_num']}\n\n"
             "Выберите тип работ или введите текстом:"
         ),
-        reply_markup=kb.action_buttons_orders_menu([1, 2, 3, 4, 5], user_tg_id, master_tg_id)
+        reply_markup=kb.action_buttons_orders_menu_new([1, 2, 3, 4, 5], user_tg_id)
     )
 
     # Убираем кнопку у клиента
     await call.answer("✅ Заявка отправлена мастеру!", show_alert=True)
-    await call.message.delete()
 
 
 # ОТВЕТ НА СООБЩЕНИЕ ОТ МАСТЕРА
 @router.callback_query(F.data.startswith("send_answer:"))
 async def handle_send_answer_button(call: CallbackQuery, state: FSMContext):
     parts = call.data.split(":")
-    if len(parts) != 3:
+
+    if len(parts) != 2:
         await call.answer("❌ Неверный формат данных", show_alert=True)
         return
 
-    try:
-        user_tg_id = int(parts[1])
-        master_tg_id = int(parts[2])
-    except ValueError:
-        await call.answer("❌ Некорректный ID", show_alert=True)
-        return
+    master_tg_id = int(parts[1])
 
-    if call.from_user.id != user_tg_id:
-        await call.answer("❌ Эта кнопка не для вас", show_alert=True)
-        return
-
-    # Сохраняем: мастер + ID сообщения от мастера (с кнопкой "Ответить")
+    # Сохраняем master_tg_id
     await state.update_data(
         target_master_id=master_tg_id,
         master_message_id=call.message.message_id  # сообщение от мастера
@@ -1112,49 +1416,113 @@ async def process_client_reply(message: Message, state: FSMContext):
         await state.clear()
         return
 
+    # Получаем данные клиента
     user_tg_id = message.from_user.id
-    user_data = await get_user_dict(user_tg_id, ["user_name", "brand_auto"])
+    user_data = await get_user_dict(user_tg_id, ["user_name", "brand_auto", "model_auto"])
 
     # Отправляем ответ мастеру
-    await message.bot.send_message(
-        chat_id=master_tg_id,
-        text=(
-            f"📨 Ответ от клиента\n"
-            f"📱 tg_id: {user_tg_id}\n"
-            f"👤 Имя: {user_data['user_name']} \n"
-            f"🚗 Марка авто: {user_data['brand_auto']}\n\n"
-            f"{message.text}"
+    try:
+        await bot.send_message(
+            chat_id=master_tg_id,
+            text=(
+                f"💬 Ответ от клиента\n"
+                f"📱 tg_id: {user_tg_id}\n"
+                f"👤 Имя: {user_data['user_name']}\n"
+                f"🚗 Марка авто: {user_data['brand_auto']}\n"
+                f"⚙️ Модель авто: {user_data['model_auto']}\n\n"
+                f"{message.text}"
+            )
         )
+
+    except TelegramAPIError:
+        pass
+
+    # Собираем ID сообщений ДЛЯ УДАЛЕНИЯ в чате клиента
+    message_ids_to_delete = []
+
+    # Сообщение-запрос "✍️ Введите ваш ответ:"
+    prompt_id = data.get("client_prompt_message_id")
+    if prompt_id:
+        message_ids_to_delete.append(prompt_id)
+
+    # Сообщение клиента с ответом (опционально — удаляем)
+    message_ids_to_delete.append(message.message_id)
+
+    # Сообщение "✅ Отправлено"
+    clean_msg = await message.answer("✅ Ваше сообщение отправлено мастеру!")
+    message_ids_to_delete.append(clean_msg.message_id)
+
+    # Запускаем удаление
+    _ = asyncio.create_task(
+        delete_messages_after_delay(bot=bot, chat_id=message.chat.id, message_ids=message_ids_to_delete)
     )
-
-    # Сохраняем ID сообщения с ответом клиента
-    await state.update_data(client_reply_message_id=message.message_id)
-
-    # Отправляем сообщение "Отправлено" + кнопку "Очистить чат"
-    clean_msg = await message.answer(
-        "✅ Ваше сообщение отправлено мастеру!",
-        reply_markup=kb.clear_user_chat()
-    )
-    await state.update_data(cleanup_message_id=clean_msg.message_id)
-
-
-@router.callback_query(F.data == "clean_client_chat")
-async def clean_client_chat(call: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-
-    message_ids_to_delete = [
-        data.get("master_message_id"),      # 1. Сообщение от мастера (с кнопкой "Ответить")
-        data.get("client_prompt_message_id"),  # 2. "Введите ваш ответ:"
-        data.get("client_reply_message_id"),   # 3. Сам ответ клиента
-        data.get("cleanup_message_id")         # 4. Сообщение с кнопкой "Очистить"
-    ]
-
-    chat_id = call.message.chat.id
-
-    # Удаляем все, что есть
-    for msg_id in message_ids_to_delete:
-        await call.bot.delete_message(chat_id=chat_id, message_id=msg_id)
 
     await state.clear()
-    await call.answer("🧹 Чат очищен.", show_alert=True)
 
+
+# HELP /help
+@router.message(Command("help"))
+async def cmd_help(message: types.Message) -> None:
+    user_id = message.from_user.id
+    role = await get_user_role(user_id)
+
+    if role is None:
+        # Пользователь не авторизован
+        text = (
+            "🔹 <b>О боте</b>\n"
+            "AutoFixBot — цифровой помощник автосервиса. "
+            "Он позволяет записываться на приём, оставлять заявки на ремонт, "
+            "общаться с мастерами, просматривать прайс и отзывы, а также управлять "
+            "своими данными — всё в одном Telegram-чате.\n\n"
+            "ℹ️ <b>Как пользоваться ботом?</b>\n\n"
+            "1️⃣ Для начала работы нажмите кнопку <b>«Авторизация»</b> — это обязательный шаг.\n\n"
+            "2️⃣ После регистрации вы сможете:\n"
+            "   • Записаться на приём к мастеру\n"
+            "   • Оставить заявку на ремонт\n"
+            "   • Написать в поддержку\n"
+            "   • Оставить отзыв\n"
+            "   • Управлять своими данными\n\n"
+            "💬 Все действия выполняются через кнопки — ничего писать не нужно!"
+        )
+
+        await message.answer(text, reply_markup=kb.auth_menu())
+    else:
+        # Авторизованный пользователь — краткая справка + главное меню
+        text = (
+            "ℹ️ <b>Справка по боту</b>\n\n"
+            "🔹 <b>ЛИЧНЫЙ КАБИНЕТ</b>\n"
+            "<b>Текущий ремонт</b> — отображает список ваших активных заявок на ремонт. "
+            "Доступна информация о статусе заказа и контактные данные назначенного мастера.\n"
+            "<b>Записаться</b> — позволяет подать заявку на приём, указав тип необходимых работ: "
+            "диагностика, ремонт или техническое обслуживание.\n"
+            "<b>Задать вопрос</b> — вы можете отправить любой технический или организационный вопрос. "
+            "Запрос получат все мастера, и тот, кто может оказать помощь, свяжется с вами напрямую.\n"
+            "<b>Написать отзыв</b> — оставьте свой отзыв о работе сервиса. "
+            "Все авторизованные пользователи смогут ознакомиться с вашим мнением.\n"
+            "<b>Мои данные</b> — просмотр и редактирование личной информации, включая данные об автомобиле.\n\n"
+            "🔹 <b>ИНФОРМАЦИЯ</b>\n"
+            "Раздел содержит подробное описание автосервиса, актуальные отзывы клиентов "
+            "и ориентировочный прайс-лист на основные виды работ.\n\n"
+            "🔹 <b>ЧАСТО ЗАДАВАЕМЫЕ ВОПРОСЫ</b>\n"
+            "Ответы на наиболее распространённые вопросы, регулярно обновляемые администрацией сервиса.\n\n"
+            "🔹 <b>КОНТАКТЫ И АДРЕС СТО</b>\n"
+            "Контактная информация автосервиса, а также возможность посмотреть его местоположение на карте.\n\n"
+            "💡 Все действия выполняются с помощью кнопок. Просто следуйте подсказкам бота!"
+        )
+
+        # Определяем меню по роли
+        if role == "admin":
+            markup = kb.admin_menu()
+        elif role == "master":
+            markup = kb.master_menu()
+        else:  # user
+            markup = kb.user_main_menu()
+
+        await message.answer(text, reply_markup=markup)
+
+
+@router.callback_query(F.data == "cancel")
+async def cancel_booking(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await call.message.delete()
+    await call.answer()

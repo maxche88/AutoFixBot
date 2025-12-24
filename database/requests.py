@@ -9,7 +9,7 @@ from database.models import User, Comments, Orders, Appointment
 from database.engine import async_session
 from sqlalchemy import func, update, select, delete, and_
 from datetime import datetime, timedelta, date, time
-from typing import Optional, Union, Tuple, List, Dict, Any
+from typing import Optional, Tuple, List, Dict, Any
 from config import config
 
 
@@ -65,16 +65,19 @@ async def add_user(data: Dict[str, Any]) -> None:
 # ==============================
 # КОММЕНТАРИИ
 # ==============================
-async def add_comment(data: Dict[str, Any]) -> None:
+async def add_comment(data: Dict[str, Any]) -> int:
     """
     Добавляет отзыв (комментарий) от пользователя.
 
     :param data: Словарь с полями модели Comments (tg_id, user_name, text).
+    :return: id: int
     """
     async with async_session() as session:
         comment_obj = Comments(**data)
         session.add(comment_obj)
         await session.commit()
+        await session.refresh(comment_obj)  #обновляет объект, включая id
+        return comment_obj.id
 
 
 async def get_visible_comments(mode: str = "user") -> List[Dict[str, Any]]:
@@ -411,15 +414,12 @@ async def create_appointment(user_id: int, master_id: int, date_val: date, start
     start_time = hour_to_time(start_hour)
     end_time = hour_to_time(end_hour)
 
-    # 🔹 Создаём datetime для начала приёма
-    appointment_datetime = datetime.combine(date_val, start_time)
-
     # 🔹 Сохраняем в БД
     async with async_session() as session:
         new_appointment = Appointment(
             tg_id_user=user_id,
             tg_id_master=master_id,
-            appointment_date=appointment_datetime,
+            appointment_date=date_val,
             appointment_time=start_time,
             end_time=end_time
         )
@@ -427,7 +427,33 @@ async def create_appointment(user_id: int, master_id: int, date_val: date, start
         await session.commit()
 
 
-async def get_appointments(
+async def get_appointment(appointment_id: int) -> Optional[Appointment]:
+    """
+    Возвращает запись на приём по её уникальному идентификатору.
+    """
+    async with async_session() as session:
+        stmt = select(Appointment).where(Appointment.id == appointment_id)
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+
+async def get_appointment_by_users(tg_id_user: int, tg_id_master: int) -> Optional[Appointment]:
+    """
+    Возвращает запись на приём по Telegram ID клиента и мастера.
+    :param tg_id_user: Telegram ID клиента.
+    :param tg_id_master: Telegram ID мастера.
+    :return: Объект Appointment или None, если не найден.
+    """
+    async with async_session() as session:
+        stmt = select(Appointment).where(
+            Appointment.tg_id_user == tg_id_user,
+            Appointment.tg_id_master == tg_id_master
+        )
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+
+async def get_filter_appointments(
     tg_id_master: Optional[int] = None,
     tg_id_user: Optional[int] = None,
     date_filter: Optional[str] = None  # "today", "month", or None (all)
@@ -521,37 +547,47 @@ async def get_active_order_id(tg_id_user: int, tg_id_master: int) -> Optional[in
 async def get_orders_by_user(
     tg_id_user: Optional[int] = None,
     tg_id_master: Optional[int] = None,
+    order_id: Optional[int] = None,
     active: bool = True
 ) -> List[Dict[str, Any]]:
     """
     Возвращает список заказов:
+    - Если указан order_id → возвращает список из одного заказа (или пустой).
     - Если указан tg_id_user → заказы клиента.
     - Если указан tg_id_master → заказы мастера.
-    - Можно указать оба.
+    - Можно указать оба tg_id_user и tg_id_master.
+
+    При поиске по order_id параметры tg_id_user, tg_id_master, active игнорируются.
 
     :param tg_id_user: Telegram ID клиента (опционально).
     :param tg_id_master: Telegram ID мастера (опционально).
     :param active:
-        - True → заказы со статусом in_work/wait
-        - False → только заказы со close.
+        - True → заказы со статусом in_work/wait (активные)
+        - False → только закрытые (close)
+    :param order_id: ID конкретного заказа (опционально).
     :return: Список словарей с данными заказов.
-    :raises ValueError: если не указан ни tg_id_user, ни tg_id_master.
+    :raises ValueError: если не указан ни один из фильтров.
     """
-    if tg_id_user is None and tg_id_master is None:
-        raise ValueError("Укажите хотя бы один из параметров: tg_id_user или tg_id_master")
-
     async with async_session() as session:
         conditions = []
 
-        if tg_id_user is not None:
-            conditions.append(Orders.tg_id_user == tg_id_user)
-        if tg_id_master is not None:
-            conditions.append(Orders.tg_id_master == tg_id_master)
-
-        if active:
-            conditions.append(Orders.repair_status != "close")
+        if order_id is not None:
+            # Поиск ТОЛЬКО по ID заказа
+            conditions.append(Orders.id == order_id)
         else:
-            conditions.append(Orders.repair_status == "close")
+            # Старая логика
+            if tg_id_user is None and tg_id_master is None:
+                raise ValueError("Укажите хотя бы один из параметров: tg_id_user, tg_id_master или order_id")
+
+            if tg_id_user is not None:
+                conditions.append(Orders.tg_id_user == tg_id_user)
+            if tg_id_master is not None:
+                conditions.append(Orders.tg_id_master == tg_id_master)
+
+            if active:
+                conditions.append(Orders.repair_status != "close")
+            else:
+                conditions.append(Orders.repair_status == "close")
 
         stmt = select(Orders).where(*conditions)
         result = await session.execute(stmt)
@@ -571,6 +607,7 @@ async def get_orders_by_user(
                 "complied": order.complied,
                 "description": order.description,
                 "brand_auto": order.brand_auto,
+                "model_auto": order.model_auto,
                 "total_km": order.total_km,
                 "year_auto": order.year_auto,
                 "gos_num": order.gos_num,

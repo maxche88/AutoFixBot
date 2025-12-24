@@ -4,11 +4,11 @@
 Все модели наследуются от общего базового класса `Base`.
 """
 
-from sqlalchemy import String, BigInteger, Boolean, DateTime, Time
+from sqlalchemy import String, BigInteger, Boolean, Date, DateTime, Time
 from sqlalchemy.orm import Mapped, mapped_column, DeclarativeBase
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from datetime import datetime, time
-from func.func_bot import current_time
+from utils.time_bot import current_time
 
 
 class Base(AsyncAttrs, DeclarativeBase):
@@ -34,6 +34,7 @@ class User(Base):
     rating: Mapped[int] = mapped_column(nullable=True, comment="Рейтинг пользователя")
     contact: Mapped[str] = mapped_column(String(20), nullable=True, comment="Контактный телефон")
     brand_auto: Mapped[str] = mapped_column(String(20), nullable=True, comment="Марка автомобиля")
+    model_auto: Mapped[str] = mapped_column(String(30), default="-", comment="Модель автомобиля")
     year_auto: Mapped[str] = mapped_column(String(20), default="-", comment="Год выпуска автомобиля")
     gos_num: Mapped[str] = mapped_column(String(20), default="-", comment="Гоc. Номер")
     vin_number: Mapped[str] = mapped_column(String(20), default="-", comment="VIN-номер автомобиля")
@@ -53,6 +54,7 @@ class Orders(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     description: Mapped[str] = mapped_column(String(100), nullable=True, comment="Описание работ или неисправности")
     brand_auto: Mapped[str] = mapped_column(String(20), nullable=True, comment="Марка автомобиля")
+    model_auto: Mapped[str] = mapped_column(String(30), default="-", comment="Модель автомобиля")
     gos_num: Mapped[str] = mapped_column(String(20), default="-", comment="Гоc. Номер")
     year_auto: Mapped[str] = mapped_column(String(20), default="-", comment="Год выпуска автомобиля")
     total_km: Mapped[str] = mapped_column(String(20), default="-", comment="Пробег авто")
@@ -78,7 +80,7 @@ class Appointment(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     tg_id_user: Mapped[int] = mapped_column(BigInteger, comment="Telegram ID клиента")
     tg_id_master: Mapped[int] = mapped_column(BigInteger, comment="Telegram ID мастера")
-    appointment_date: Mapped[datetime] = mapped_column(DateTime, comment="Дата записи")
+    appointment_date: Mapped[datetime] = mapped_column(Date, comment="Дата записи")
     appointment_time: Mapped[time] = mapped_column(Time, comment="Начало временного слота")
     end_time: Mapped[time] = mapped_column(Time, comment="Окончание временного слота")
 
@@ -96,3 +98,20 @@ class Comments(Base):
     text: Mapped[str] = mapped_column(String(128), comment="Текст отзыва")
     date: Mapped[datetime] = mapped_column(DateTime, default=current_time, comment="Дата публикации отзыва")
     is_visible: Mapped[bool] = mapped_column(Boolean, default=True, comment="Отображать отзыв (True = да)")
+
+
+class Diagnostics(Base):
+    __tablename__ = 'diagnostics'
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    brand_auto: Mapped[str] = mapped_column(String(20), comment="Марка автомобиля")
+    model_auto: Mapped[str] = mapped_column(String(30), comment="Модель автомобиля")
+    year_auto: Mapped[str] = mapped_column(String(10), comment="Год выпуска")
+    symptoms_and_causes: Mapped[str] = mapped_column(
+        String(1000),
+        default="{}",
+        comment="JSON: {\"симптом или DTC\": \"причина\"}"
+    )
+    master_tg_id: Mapped[int] = mapped_column(BigInteger, comment="Telegram ID мастера, добавившего запись")
+    client_tg_id: Mapped[int] = mapped_column(BigInteger, comment="Telegram ID клиента")
+    order_id: Mapped[int] = mapped_column(BigInteger, nullable=True, comment="ID связанного заказа (Orders.id)")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=current_time, comment="Дата добавления записи")

@@ -9,6 +9,10 @@ class Config:
     API_TOKEN = os.getenv("API_TOKEN")
     ADMIN_ID = os.getenv("ADMIN_ID")
 
+    RAPID_API_KEY = os.getenv("RAPID_API_KEY")
+
+    TEMP_MESSAGE_LIFETIME_SEC: int = 5  # время жизни временных сообщений (в секундах)
+
     # Ссылка на карту
     SERVICE_LOCATION_URL = ("https://yandex.ru/navi/"
                             "?whatshere%5Bpoint%5D=73.305003%2C54.908418&whatshere%5Bzoom%5D=18&lang=ru&from=navi")
