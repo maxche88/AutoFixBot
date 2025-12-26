@@ -27,8 +27,11 @@ from utils.time_bot import get_greeting
 from utils.utils_bot import delete_messages_after_delay
 from config import config
 from aiogram.exceptions import TelegramAPIError
+import logging
 import re
 
+
+logger = logging.getLogger(__name__)
 
 router = Router()
 
@@ -84,6 +87,10 @@ class AppointmentResponse(StatesGroup):
     waiting_for_text = State()
 
 
+class QuickQuestionToMaster(StatesGroup):
+    waiting_for_custom_text = State()
+
+
 # ==============================
 # АВТОРИЗАЦИЯ
 # ==============================
@@ -95,6 +102,8 @@ async def reg_one(call: CallbackQuery, state: FSMContext) -> None:
     if await get_user_role(user_id):
         await call.answer("Вы уже авторизированы", show_alert=True)
         return
+
+    logger.info(f"Пользователь {user_id} начал процесс авторизации.")
 
     auth_message_id = call.message.message_id
 
@@ -208,9 +217,10 @@ async def confirm_registration(call: CallbackQuery, state: FSMContext) -> None:
                 )
         )
 
+    user_id = data.get("user_id")
     # Сохраняем пользователя
     new_user = {
-        "tg_id": data.get("user_id"),
+        "tg_id": user_id,
         "user_name": data.get("user_name"),
         "status": "Клиент",
         "rating": 1,
@@ -227,6 +237,7 @@ async def confirm_registration(call: CallbackQuery, state: FSMContext) -> None:
         reply_markup=kb.user_main_menu()
     )
 
+    logger.info(f"Пользователь {user_id} успешно завершил авторизацию.")
     await add_user(new_user)
     await call.message.delete()
     await state.clear()
@@ -277,6 +288,8 @@ async def cmd_start(message: types.Message) -> None:
             reply_markup=kb.auth_menu()
         )
         return
+
+    logger.info(f"Пользователь {user_id} ({name}) вошёл в систему с ролью: {role}")
 
     await message.answer_photo(photo=titul_img)
 
@@ -427,7 +440,14 @@ async def info_rem(call: CallbackQuery, state: FSMContext):
 
         if is_active:
             reply_markup = kb.get_accept_work_keyboard(
+                [1, 3, 4],  # Кнопка "Принять работу", "Какая цена?", "Сообщение"
                 order_id=order["id"],
+                master_tg_id=order["tg_id_master"]
+            )
+
+        else:
+            reply_markup = kb.get_accept_work_keyboard(
+                [2, 3, 4],  # Кнопка "Когда будет готово?", "Какая цена?", "Написать свой вопрос"
                 master_tg_id=order["tg_id_master"]
             )
 
@@ -458,15 +478,66 @@ async def back_to_account_from_orders(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     message_ids = data.get("sent_order_messages", [])
 
-    # Удаляем все временные сообщения (заказы + кнопка "Назад")
-    for msg_id in message_ids:
-        await call.bot.delete_message(
-            chat_id=call.message.chat.id,
-            message_id=msg_id
-        )
+    if message_ids:
+        # Удаляем все временные сообщения (заказы + кнопка "Назад")
+        for msg_id in message_ids:
+            await call.bot.delete_message(
+                chat_id=call.message.chat.id,
+                message_id=msg_id
+            )
 
     await state.clear()
     await call.answer()
+
+
+# ==============================
+# БЫСТРЫЕ ОТВЕТЫ
+# ==============================
+QUICK_MESSAGE_TEMPLATES = {
+    "question_price": "💰 Какая цена?",
+    "question_time": "💬 Когда будет готово?",
+    "app_ok": "✅ Клиент подтвердил запись: «Приеду вовремя».",
+    "app_no": "❌ Клиент отменил запись: «Не сможет приехать».",
+    "app_trans": "🔄 Клиент хочет перенести запись."
+}
+
+
+@router.callback_query(F.data.startswith("quick_mess:"))
+async def quick_mess(call: CallbackQuery):
+    parts = call.data.split(":", 3)
+    if len(parts) != 3:
+        await call.answer("❌ Некорректный формат быстрого сообщения.", show_alert=True)
+        return
+
+    action = parts[1]
+    try:
+        tg_id = int(parts[2])
+    except ValueError:
+        await call.answer("❌ Некорректный ID получателя.", show_alert=True)
+        return
+
+    user_tg_id = call.from_user.id
+    user_data = await get_user_dict(user_tg_id, ["user_name"])
+    user_name = user_data.get("user_name")
+
+    # Получаем текст вопроса из словаря
+    question_text = QUICK_MESSAGE_TEMPLATES.get(action)
+    if not question_text:
+        await call.answer("❌ Неизвестный тип быстрого сообщения.", show_alert=True)
+        return
+
+    text_for_master = (
+        "🔔 СООБЩЕНИЕ ОТ ПОЛЬЗОВАТЕЛЯ\n"
+        f"👤 Имя: {user_name}\n"
+        f"📱 Телеграм: {user_tg_id}\n\n"
+        f"💬 {question_text}"
+    )
+
+    await bot.send_message(chat_id=tg_id,
+                           text=text_for_master,
+                           reply_markup=kb.common_menu([4]))
+
+    await call.answer("✅ Ваш запрос на перенос записи отправлен мастеру!", show_alert=True)
 
 
 # ==============================
@@ -482,7 +553,8 @@ async def handle_accept_work(call: CallbackQuery, state: FSMContext):
     try:
         order_id = int(parts[1])
         master_tg_id = int(parts[2])
-    except (ValueError, IndexError):
+    except (ValueError, IndexError) as e:
+        logger.error(f"Ошибка данных в callback: {e}")
         await call.answer("❌ Ошибка данных", show_alert=True)
         return
 
@@ -518,11 +590,13 @@ async def handle_accept_work(call: CallbackQuery, state: FSMContext):
 
 @router.callback_query(AcceptWork.waiting_for_grade, F.data.startswith("grade:"))
 async def process_grade(call: CallbackQuery, state: FSMContext):
+    user_id = call.from_user.id
     try:
         grade = int(call.data.split(":", 1)[1])
         if grade not in (1, 2, 3, 4, 5):
             raise ValueError
-    except (ValueError, IndexError):
+    except (ValueError, IndexError) as e:
+        logger.error(f"Не удалось поставить оценку мастеру: {e}")
         await call.answer("❌ Выберите оценку от 1 до 5", show_alert=True)
         return
 
@@ -540,6 +614,7 @@ async def process_grade(call: CallbackQuery, state: FSMContext):
     success = await update_order(order_id=order_id, repair_status="close")
     if success:
         await add_grade(master_tg_id, grade)
+        await add_grade(user_id, 5)  # Клиент тоже поднимает свой рейтинг на 5 принимая заказ
 
     # Показываем ТОЛЬКО alert
     await call.answer("Спасибо, что выбрали наше СТО! 🙏", show_alert=True)
@@ -590,7 +665,7 @@ async def start_booking(call: CallbackQuery):
         await call.message.edit_text(
             text,
             parse_mode="HTML",
-            reply_markup=kb.action_buttons_orders_menu_new([12, 13, 7, 9], master_tg_id)
+            reply_markup=kb.master_menu_app([21, 22, 16, 18], master_tg_id)
         )
 
         await call.answer()
@@ -636,6 +711,7 @@ async def handle_service_choice(call: CallbackQuery, state: FSMContext):
     )
 
     if not user_data:
+        logger.error(f"Не удалось загрузить данные для пользователя {user_id} при выборе услуги.")
         await call.message.answer("❌ Не удалось загрузить ваши данные. Обратитесь в поддержку.")
         await state.clear()
         return
@@ -684,7 +760,7 @@ async def handle_service_choice(call: CallbackQuery, state: FSMContext):
         await call.message.answer(
             preview_text,
             parse_mode="HTML",
-            reply_markup=kb.login_menu([6])
+            reply_markup=kb.common_menu([6])
         )
 
     else:
@@ -696,7 +772,7 @@ async def handle_service_choice(call: CallbackQuery, state: FSMContext):
 
         await call.message.answer(
             preview_text,
-            reply_markup=kb.login_menu([19, 6])  # "Записаться" + "Назад"
+            reply_markup=kb.common_menu([19, 6])  # "Записаться" + "Назад"
         )
 
         await state.update_data(
@@ -745,7 +821,7 @@ async def confirm_booking(call: CallbackQuery, state: FSMContext):
             chat_id=master_id,
             text=formatted_request,
             parse_mode="HTML",
-            reply_markup=kb.staff_menu([1, 2, 3, 9, 4, 5, 8], user_id=user_id)
+            reply_markup=kb.master_menu_app([1, 2, 3, 9, 4, 5, 8], user_id=user_id)
         )
 
     await call.answer("✅ Заявка отправлена! Мастер свяжется с вами в ближайшее время.", show_alert=True)
@@ -753,77 +829,39 @@ async def confirm_booking(call: CallbackQuery, state: FSMContext):
     await call.message.delete()
 
 
-# ОТВЕТ КЛИЕНТА НА СООБЩЕНИЕ (НАПОМИНАНИЕ)
+# !!!!!!!!!!!!!!!!!!!!!!!!!
+# ==============================
+# ОТВЕТ ТЕКСТОМ КЛИЕНТА НА СООБЩЕНИЕ (НАПОМИНАНИЕ)
+# ==============================
 
-# Словарь для отображения ответов клиента в читаемом виде для мастера
-ANSWER_TEMPLATES = {
-    "send_ok": "✅ Клиент подтвердил запись: «Приеду вовремя».",
-    "send_no": "❌ Клиент отменил запись: «Не сможет приехать».",
-    "app_transfer": "🔄 Клиент хочет перенести запись."
-}
-
-
-# ОТВЕТ КЛИЕНТА. БЫСТРЫЕ ОТВЕТЫ
 @router.callback_query(F.data.startswith("answer_app:"))
-async def handle_client_appointment_response(call: CallbackQuery):
-    data = call.data
-
-    parts = data.split(":")
-    if len(parts) != 3:
-        await call.answer("❌ Некорректные данные.", show_alert=True)
+async def handle_client_text_response_only(call: CallbackQuery, state: FSMContext):
+    """
+    Обрабатывает нажатие кнопки «✏️ ВВЕСТИ ТЕКСТОМ» из формы напоминания о встрече.
+    Формат: answer_app:<master_tg_id>
+    Переводит клиента в состояние ввода текста.
+    """
+    parts = call.data.split(":", 1)  # ['answer_app', '123456789']
+    if len(parts) != 2:
+        await call.answer("❌ Некорректный формат данных.", show_alert=True)
         return
 
-    _, action, master_tg_id_str = parts
-
-    if action not in ANSWER_TEMPLATES:
-        await call.answer("❌ Неизвестный тип ответа.", show_alert=True)
-        return
+    print(int(parts[1]))
 
     try:
-        master_tg_id = int(master_tg_id_str)
-    except ValueError:
+        master_tg_id = int(parts[1])
+    except (ValueError, TypeError):
         await call.answer("❌ Некорректный ID мастера.", show_alert=True)
         return
 
-    client_id = call.from_user.id
-    data_user = await get_user_dict(client_id, ["user_name"])
-    client_name = data_user["user_name"]
-
-    # Формируем сообщение для мастера
-    message_for_master = (
-        f"🔔 Ответ от клиента:\n"
-        f"👤 Имя: {client_name}\n"
-        f"Телеграм ID: {client_id}"
-        f"{ANSWER_TEMPLATES[action]}"
-    )
-
-    # Отправляем сообщение мастеру
-    await bot.send_message(chat_id=master_tg_id, text=message_for_master)
-
-    # Подтверждаем нажатие
-    await call.answer(f"✔️ Ваш ответ отправлен мастеру.\n\n{ANSWER_TEMPLATES[action]}")
-
-
-# ОТВЕТ КЛИЕНТА. ОТВЕТ ТЕКСТОМ
-@router.callback_query(F.data.startswith("answer_app_text:"))
-async def handle_in_text_request(call: CallbackQuery, state: FSMContext):
-    parts = call.data.split(":")
-    if len(parts) != 2:
-        await call.answer("❌ Некорректные данные.", show_alert=True)
-        return
-
-    master_tg_id = parts[1]
-
-    # Сохраняем данные и инициализируем список ID сообщений
+    # Сохраняем данные для последующей отправки
     await state.update_data(
         master_tg_id=master_tg_id,
         chat_id=call.message.chat.id,
     )
 
-    # Просим ввести текст
+    # Запрашиваем текстовое сообщение
     prompt_msg = await call.message.answer("✏️ Пожалуйста, введите ваше сообщение мастеру:")
-
-    # Добавляем ID нового сообщения в состояние
     await state.set_state(AppointmentResponse.waiting_for_text)
     await state.update_data(message_ids=[prompt_msg.message_id])
     await call.answer()
@@ -831,7 +869,15 @@ async def handle_in_text_request(call: CallbackQuery, state: FSMContext):
 
 @router.message(AppointmentResponse.waiting_for_text)
 async def handle_custom_text_response(message: Message, state: FSMContext):
+    """Принимает текст от клиента и отправляет его мастеру."""
     user_text = message.text
+    if not user_text or not user_text.strip():
+        error_msg = await message.answer("📝 Сообщение не может быть пустым. Пожалуйста, введите текст:")
+        data = await state.get_data()
+        message_ids = data.get("message_ids", [])
+        message_ids.extend([message.message_id, error_msg.message_id])
+        await state.update_data(message_ids=message_ids)
+        return
 
     data = await state.get_data()
     master_tg_id = data.get("master_tg_id")
@@ -841,44 +887,45 @@ async def handle_custom_text_response(message: Message, state: FSMContext):
     # Добавляем сообщение пользователя
     message_ids.append(message.message_id)
 
-    if not user_text or not user_text.strip():
-        # Отправляем ошибку
-        error_msg = await message.answer("📝 Сообщение не может быть пустым. Пожалуйста, введите текст:")
-        message_ids.append(error_msg.message_id)
-        await state.update_data(message_ids=message_ids)
-        return
-
-    # Проверка master_tg_id
+    # Проверка и приведение master_tg_id
     try:
         master_tg_id = int(master_tg_id)
     except (ValueError, TypeError):
+        await message.answer("❌ Ошибка: получатель не указан.")
         await state.clear()
         return
 
-    # Отправка мастеру
+    # Формируем сообщение для мастера
     client_name = message.from_user.full_name
-    client_id = message.from_user.id
+    client_tg_id = message.from_user.id
     msg_for_master = (
-        f"📨 Ответ от клиента\n\n"
-        f"📱 tg_id: {client_id}\n"
-        f"👤 Имя: {client_name} \n\n"
+        f"🔔 СООБЩЕНИЕ ОТ ПОЛЬЗОВАТЕЛЯ\n"
+        f"👤 Имя: {client_name}\n"
+        f"📱 Телеграм: {client_tg_id}\n\n"
         f"💬 {user_text}"
     )
 
+    # Отправляем мастеру
     try:
-        await bot.send_message(chat_id=master_tg_id, text=msg_for_master)
-    except TelegramAPIError:
-        pass  # игнорируем
+        await bot.send_message(chat_id=master_tg_id,
+                               text=msg_for_master,
+                               reply_markup=kb.common_menu([4]))
+
+    except TelegramAPIError as e:
+        logger.error(f"Не удалось отправить сообщение от клиента {client_tg_id} мастеру {master_tg_id}: {e}")
 
     # Подтверждение клиенту
     success_msg = await message.answer("✅ Сообщение отправлено!")
     message_ids.append(success_msg.message_id)
 
-    # Сохраняем финальный список
-    await state.update_data(message_ids=message_ids)
-
-    # Запускаем удаление всех сообщений в контексте данного чата
-    _ = asyncio.create_task(delete_messages_after_delay(bot=bot, chat_id=chat_id, message_ids=message_ids))
+    # Запускаем отложенное удаление всех сообщений (запрос + ввод + подтверждение)
+    _ = asyncio.create_task(
+        delete_messages_after_delay(
+            bot=bot,
+            chat_id=chat_id,
+            message_ids=message_ids
+        )
+    )
 
     await state.clear()
 
@@ -916,9 +963,8 @@ async def handle_transfer_entry_request(call: CallbackQuery):
     # Отправляем мастеру
     try:
         await bot.send_message(chat_id=master_tg_id, text=message_for_master, parse_mode="HTML")
-    except TelegramAPIError:
-        # Игнорируем ошибку
-        pass
+    except TelegramAPIError as e:
+        logger.error(f"Не удалось отправить запрос на перенос записи {client_tg_id} мастеру {master_tg_id}: {e}")
 
     # Уведомляем клиента
     await call.answer("✅ Ваш запрос на перенос записи отправлен мастеру!", show_alert=True)
@@ -931,27 +977,20 @@ async def handle_transfer_entry_request(call: CallbackQuery):
 
 
 # ==============================
-# ЗАДАТЬ ВОПРОС
+# ЗАДАТЬ ВОПРОС ВСЕМ МАСТЕРАМ
 # ==============================
-@router.callback_query(F.data.startswith("send_message"))
-async def initiate_support_message(call: CallbackQuery, state: FSMContext):
+@router.callback_query(F.data == "send_message_all")
+async def initiate_support_message_to_all(call: CallbackQuery, state: FSMContext):
     """
-    Начинает процесс отправки сообщения:
-    - если в callback_data есть ID мастера → сообщение отправится только ему,
-    - иначе — всем мастерам с can_mess=True.
+    Начинает процесс отправки сообщения всем активным мастерам (can_mess=True).
     """
-    parts = call.data.split(":", 1)
-    master_tg_id = None
-    if len(parts) == 2:
-        try:
-            master_tg_id = int(parts[1])
-        except ValueError:
-            pass  # игнорируем некорректный ID
-
     user_id = call.from_user.id
     user_data = await get_user_dict(user_id, ["user_name"])
-    user_name = user_data["user_name"]
+    if not user_data:
+        await call.answer("❌ Ошибка: не удалось загрузить ваш профиль.", show_alert=True)
+        return
 
+    user_name = user_data["user_name"]
     menu_text = (
         "📁 <b>ЗАДАТЬ ВОПРОС</b>\n\n"
         f"{user_name}, опишите ваш вопрос максимально подробно — это поможет мастерам быстрее понять суть и дать "
@@ -964,21 +1003,20 @@ async def initiate_support_message(call: CallbackQuery, state: FSMContext):
         text=menu_text,
         reply_markup=kb.user_return_to_profile()
     )
-    await state.update_data(master_tg_id=master_tg_id)  # ← сохраняем ID
     await state.set_state(Mess.mess_step)
     await call.answer()
 
 
 @router.message(Mess.mess_step)
-async def save_and_send_support_message(message: Message, state: FSMContext) -> None:
-    """Отправляет сообщение либо указанному мастеру, либо всем мастерам."""
+async def save_and_send_support_message_to_all(message: Message, state: FSMContext) -> None:
+    """Отправляет сообщение всем мастерам с can_mess=True."""
     if not message.text or not message.text.strip():
         await message.answer("❌ Пожалуйста, введите непустое сообщение.")
         return
 
-    user_id = message.from_user.id
+    user_tg_id = message.from_user.id
     user_data = await get_user_dict(
-        user_id,
+        user_tg_id,
         ["user_name", "rating", "brand_auto", "model_auto", "year_auto", "contact", "total_km"]
     )
 
@@ -987,74 +1025,54 @@ async def save_and_send_support_message(message: Message, state: FSMContext) -> 
         await state.clear()
         return
 
-    # Получаем ID целевого мастера (если был указан)
-    data = await state.get_data()
-    master_tg_id = data.get("master_tg_id")
+    # Получаем всех мастеров, которым разрешено получать сообщения
+    master_ids = await can_mess_true()
 
-    # Отправка мастерам
     contact = user_data['contact']
+    formatted_message = (
+        f"🔔 СООБЩЕНИЕ ОТ ПОЛЬЗОВАТЕЛЯ\n\n"
+        f"👤 Имя: {user_data['user_name']}\n"
+        f"⭐️ Рейтинг: {user_data['rating']}\n"
+        f"🚗 Марка авто: {user_data['brand_auto']}\n"
+        f"⚙️ Модель авто: {user_data['model_auto']}\n"
+        f"📆 Год выпуска: {user_data['year_auto']}\n"
+        f"🛞 Пробег км: {user_data['total_km']}\n"
+        f'📱 Телеграм ID: <a href="tg://user?id={user_tg_id}">{user_tg_id}</a>\n'
+        f'📞 Контакт: <a href="tel:{contact}">{contact}</a>\n'
+        f"💬 Сообщение:\n\n{message.text[:100]}"
+    )
 
-    # Основная логика отправки
-    recipients = []
-
-    if master_tg_id is not None:
-        # Отправляем ТОЛЬКО указанному мастеру
-        recipients = [master_tg_id]
-
-        formatted_message = (
-            f"🔔 СООБЩЕНИЕ ОТ ЗАПИСАННОГО КЛИЕНТА\n\n"
-            f"👤 Имя: {user_data['user_name']}\n"
-            f"⭐️ Рейтинг: {user_data['rating']}\n"
-            f"🚗 Марка авто: {user_data['brand_auto']}\n"
-            f"⚙️ Модель авто: {user_data['model_auto']}\n"
-            f'📱 Телеграм ID: <a href="tg://user?id={user_id}">{user_id}</a>\n'
-            f'📞 Контакт: <a href="tel:{contact}">{contact}</a>\n'
-            f"💬 Сообщение:\n\n{message.text[:100]}"
-        )
-    else:
-        # Отправляем ВСЕМ мастерам с can_mess=True
-        recipients = await can_mess_true()
-
-        formatted_message = (
-            f"🔔 СООБЩЕНИЕ ОТ ПОЛЬЗОВАТЕЛЯ\n\n"
-            f"👤 Имя: {user_data['user_name']}\n"
-            f"⭐️ Рейтинг: {user_data['rating']}\n"
-            f"🚗 Марка авто: {user_data['brand_auto']}\n"
-            f"⚙️ Модель авто: {user_data['model_auto']}\n"
-            f"📆 Год выпуска: {user_data['year_auto']}\n"
-            f"🛞 Пробег км: {user_data['total_km']}\n"
-            f'📱 Телеграм ID: <a href="tg://user?id={user_id}">{user_id}</a>\n'
-            f'📞 Контакт: <a href="tel:{contact}">{contact}</a>\n'
-            f"💬 Сообщение:\n\n{message.text[:100]}"
-        )
-
-    # Отправка
-    for master_id in recipients:
+    # Отправка всем мастерам
+    send_count = 0
+    for master_id in master_ids:
         try:
             await bot.send_message(
                 chat_id=master_id,
                 text=formatted_message,
-                reply_markup=kb.staff_menu([1, 2, 3, 9, 4, 5, 8], user_id=user_id)
+                parse_mode="HTML",
+                reply_markup=kb.master_menu_app([1, 2, 3, 9, 4, 5, 8], user_id=user_tg_id)
             )
+            send_count += 1
+        except TelegramAPIError as e:
+            logger.error(f"Не удалось отправить сообщение мастеру {master_id}: {e}")
 
-        except TelegramAPIError:
-            pass
-
-        # Подтверждение клиенту
+    # Подтверждение клиенту
+    if send_count == 0:
+        success_msg = await message.answer("❌ Не удалось доставить сообщение.")
+    else:
         success_msg = await message.answer("✅ Ваше сообщение отправлено!\nОжидайте ответа.")
 
-        # Удаляем сообщения
-        message_ids_to_delete = [message.message_id, success_msg.message_id]
-        _ = asyncio.create_task(
-            delete_messages_after_delay(
-                bot=bot,
-                chat_id=message.chat.id,
-                message_ids=message_ids_to_delete,
-                delay=config.TEMP_MESSAGE_LIFETIME_SEC
-            )
+    # Удаляем сообщения через отложенный вызов
+    message_ids_to_delete = [message.message_id, success_msg.message_id]
+    _ = asyncio.create_task(
+        delete_messages_after_delay(
+            bot=bot,
+            chat_id=message.chat.id,
+            message_ids=message_ids_to_delete,
+            delay=config.TEMP_MESSAGE_LIFETIME_SEC
         )
-
-        await state.clear()
+    )
+    await state.clear()
 
 
 # ==============================
@@ -1139,9 +1157,9 @@ async def save_comment_text(message: Message, state: FSMContext):
 # ==============================
 @router.callback_query(F.data == "login")
 async def show_user_data(call: CallbackQuery) -> None:
-    user_id = call.from_user.id
+    user_tg_id = call.from_user.id
     user_data = await get_user_dict(
-        user_id,
+        user_tg_id,
         ["user_name", "brand_auto", "model_auto", "year_auto", "gos_num", "vin_number", "rating", "contact", "total_km"]
     )
 
@@ -1166,7 +1184,7 @@ async def show_user_data(call: CallbackQuery) -> None:
 
     except Exception as e:
         # Логируем ошибку
-        print(f"Ошибка при редактировании: {e}")
+        logger.error(f"Ошибка при загрузке данных пользователя {user_tg_id}: {e}", exc_info=True)
         await call.answer("⚠️ Не удалось загрузить данные.", show_alert=True)
 
     await call.answer()
@@ -1180,7 +1198,7 @@ async def edit_menu(call: CallbackQuery, state: FSMContext) -> None:
     """Открывает меню редактирования данных."""
     prompt_msg = await call.message.answer(
         "Выберите данные для изменения или дополнения:",
-        reply_markup=kb.login_menu([13, 14, 7, 15, 18, 16, 17, 6])
+        reply_markup=kb.common_menu([13, 14, 7, 15, 18, 16, 17, 6])
     )
     # Новый список временных сообщений
     await state.update_data(edit_message_ids=[prompt_msg.message_id])
@@ -1278,7 +1296,7 @@ async def about_service(call: CallbackQuery) -> None:
         "не ярок свет!? Найдём ответ — решим проблему.\n"
         "Езжай в компанию РАССВЕТ!</i>"
     )
-    await call.message.answer_photo(photo=info_img, caption=caption, reply_markup=kb.comment_menu())
+    await call.message.answer_photo(photo=info_img, caption=caption, reply_markup=kb.user_info_menu())
 
 
 # ПОКАЗАТЬ ОТЗЫВЫ КЛИЕНТОВ
@@ -1302,7 +1320,7 @@ async def show_comments(call: CallbackQuery):
     await call.message.answer(
         text,
         parse_mode="HTML",
-        reply_markup=kb.login_menu([6])
+        reply_markup=kb.common_menu([6])
     )
     await call.answer()
 
@@ -1313,7 +1331,7 @@ async def show_price_list(call: CallbackQuery) -> None:
     """Отправляет ориентировочный прайс из файла."""
     with open("info/price.txt", "r", encoding="utf-8") as f:
         text = f.read()
-    await call.message.answer(text, reply_markup=kb.login_menu([6]))
+    await call.message.answer(text, reply_markup=kb.common_menu([6]))
     await call.answer()
 
 
@@ -1323,7 +1341,7 @@ async def faq_service(call: CallbackQuery) -> None:
     with open("info/FAQ.txt", "r", encoding="utf-8") as f:
         text = f.read()
 
-    await call.message.answer(text, reply_markup=kb.login_menu([6]))
+    await call.message.answer(text, reply_markup=kb.common_menu([6]))
     await call.answer()
 
 
@@ -1352,7 +1370,8 @@ async def handle_send_repair_request(call: CallbackQuery):
 
     try:
         master_tg_id = int(parts[1])
-    except ValueError:
+    except ValueError as e:
+        logger.error(f"Некорректные данные {user_tg_id} мастеру: {e}")
         await call.answer("❌ Некорректные данные", show_alert=True)
         return
 
@@ -1367,6 +1386,7 @@ async def handle_send_repair_request(call: CallbackQuery):
             f"👤 Имя: {user_data['user_name']}\n"
             f"📱 Телеграм: {user_data['tg_id']}\n"
             f"📞 Сот. тел.: {user_data['contact']}\n"
+            f"⭐️ Рейтинг: {user_data['rating']}\n"
             f"🚗 Марка авто: {user_data['brand_auto']} \n"
             f"⚙️ Модель авто: {user_data['model_auto']}\n"
             f"🛞 Пробег км: {user_data['total_km']} \n"
@@ -1375,14 +1395,14 @@ async def handle_send_repair_request(call: CallbackQuery):
             f"🔢 Гос. номер: {user_data['gos_num']}\n\n"
             "Выберите тип работ или введите текстом:"
         ),
-        reply_markup=kb.action_buttons_orders_menu_new([1, 2, 3, 4, 5], user_tg_id)
+        reply_markup=kb.master_menu_app([10, 11, 12, 13, 14, 8], user_tg_id)
     )
 
     # Убираем кнопку у клиента
     await call.answer("✅ Заявка отправлена мастеру!", show_alert=True)
 
 
-# ОТВЕТ НА СООБЩЕНИЕ ОТ МАСТЕРА
+# СООБЩЕНИЕ МАСТЕРУ
 @router.callback_query(F.data.startswith("send_answer:"))
 async def handle_send_answer_button(call: CallbackQuery, state: FSMContext):
     parts = call.data.split(":")
@@ -1425,30 +1445,28 @@ async def process_client_reply(message: Message, state: FSMContext):
         await bot.send_message(
             chat_id=master_tg_id,
             text=(
-                f"💬 Ответ от клиента\n"
-                f"📱 tg_id: {user_tg_id}\n"
+                f"🔔 СООБЩЕНИЕ ОТ ПОЛЬЗОВАТЕЛЯ\n"
                 f"👤 Имя: {user_data['user_name']}\n"
-                f"🚗 Марка авто: {user_data['brand_auto']}\n"
-                f"⚙️ Модель авто: {user_data['model_auto']}\n\n"
-                f"{message.text}"
+                f"📱 Телеграм: {user_tg_id}\n"
+                f"💬 {message.text}"
             )
         )
 
-    except TelegramAPIError:
-        pass
+    except TelegramAPIError as e:
+        logger.error(f"Не удалось отправить сообщение от клиента {user_tg_id} мастеру {master_tg_id}: {e}")
 
     # Собираем ID сообщений ДЛЯ УДАЛЕНИЯ в чате клиента
     message_ids_to_delete = []
 
-    # Сообщение-запрос "✍️ Введите ваш ответ:"
+    # Сообщение-запрос "Введите ваш ответ:"
     prompt_id = data.get("client_prompt_message_id")
     if prompt_id:
         message_ids_to_delete.append(prompt_id)
 
-    # Сообщение клиента с ответом (опционально — удаляем)
+    # Сообщение клиента с ответом
     message_ids_to_delete.append(message.message_id)
 
-    # Сообщение "✅ Отправлено"
+    # Сообщение "Отправлено"
     clean_msg = await message.answer("✅ Ваше сообщение отправлено мастеру!")
     message_ids_to_delete.append(clean_msg.message_id)
 

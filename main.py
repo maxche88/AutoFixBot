@@ -1,43 +1,50 @@
-from aiogram import Dispatcher
-import os
-import logging
 import asyncio
+import logging
+from aiogram import Dispatcher
+from bot import bot
+from database.engine import init_db
+from services.init_admin import init_admin_user
 from routers.common_handlers import router as common_router
 from routers.staff_handlers import router as staff_router
-from database.engine import init_db
-from bot import bot
-from services.init_admin import init_admin_user
+from logger import setup_logging
 
 
-# Настройка логирования
-log_dir = "logs"
-os.makedirs(log_dir, exist_ok=True)
-
-logging.basicConfig(
-    filename=os.path.join(log_dir, "bot.log"),
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    encoding='utf-8'
-)
-
+# Инициализация диспетчера и подключение роутеров
 dp = Dispatcher()
-
 dp.include_router(common_router)
 dp.include_router(staff_router)
 
 
 async def main():
-    await init_db()
-    await init_admin_user()
-    print('✅ Бот включен')
-    await dp.start_polling(bot)
+    # Настройка логирования
+    setup_logging()
+    logger = logging.getLogger(__name__)
 
-if __name__ == '__main__':
     try:
+        # Инициализация базы данных
+        await init_db()
+        logger.info("База данных инициализирована.")
+
+        # Создание администратора при первом запуске
+        await init_admin_user()
+        logger.info("Пользователь-админ создан.")
+
+        # Запуск бота
+        logger.info("Бот запущен.")
+        await dp.start_polling(bot)
+
+    except Exception:
+        logger.critical("Критическая ошибка при запуске бота", exc_info=True)
+        raise
+
+
+if __name__ == "__main__":
+    try:
+        print("✅ Запуск бота")
         asyncio.run(main())
     except KeyboardInterrupt:
-        print('🛑 Бот остановлен вручную.')
+        print("🛑 Бот остановлен вручную.")
+        logging.getLogger(__name__).info("Бот остановлен.")
     except Exception as e:
-        logging.error(f"Критическая ошибка: {e}")
-        print(f"❌ Ошибка: {e}")
+        logging.getLogger(__name__).critical(f"Необработанное исключение на верхнем уровне: {e}", exc_info=True)
 

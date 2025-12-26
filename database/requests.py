@@ -5,7 +5,7 @@
 Все функции асинхронные и работают через session-обёртку.
 """
 
-from database.models import User, Comments, Orders, Appointment
+from database.models import User, Comments, Orders, Appointment, History
 from database.engine import async_session
 from sqlalchemy import func, update, select, delete, and_
 from datetime import datetime, timedelta, date, time
@@ -387,22 +387,36 @@ async def get_available_hours(target_date: date):
         return all_possible_hours - occupied_hours
 
 
+async def get_appointment_by_users(tg_id_user: int, tg_id_master: int) -> Optional[Appointment]:
+    """
+    Возвращает запись на приём по Telegram ID клиента и мастера.
+    :param tg_id_user: Telegram ID клиента.
+    :param tg_id_master: Telegram ID мастера.
+    :return: Объект Appointment или None, если не найден.
+    """
+    async with async_session() as session:
+        stmt = select(Appointment).where(
+            Appointment.tg_id_user == tg_id_user,
+            Appointment.tg_id_master == tg_id_master
+        )
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+
 async def create_appointment(user_id: int, master_id: int, date_val: date, start_hour: float, end_hour: float) -> None:
     """
     Создаёт новую запись на приём.
-
-    :param user_id: ID пользователя
-    :param master_id: ID мастера который записал клиента
-    :param date_val: Дата приёма (datetime.date)
-    :param start_hour: Время начала в часах (например, 9.5 → 9:30)
-    :param end_hour: Время окончания в часах (например, 11.0 → 11:00)
+    Если уже существует запись между user_id и master_id — она удаляется перед созданием новой.
     """
+    # Удаляем существующую запись между этим клиентом и мастером
+    existing = await get_appointment_by_users(user_id, master_id)
+    if existing:
+        await delete_appointment(existing.id)
 
     # Преобразуем дробные часы в (часы, минуты)
     def hour_to_time(h: float) -> time:
         hours = int(h)
         minutes = int(round((h - hours) * 60))
-        # Защита от переполнения минут (например, 9.99 → 9:59.4 → 10:00)
         if minutes >= 60:
             hours += 1
             minutes -= 60
@@ -414,7 +428,7 @@ async def create_appointment(user_id: int, master_id: int, date_val: date, start
     start_time = hour_to_time(start_hour)
     end_time = hour_to_time(end_hour)
 
-    # 🔹 Сохраняем в БД
+    # Создаём новую запись
     async with async_session() as session:
         new_appointment = Appointment(
             tg_id_user=user_id,
@@ -433,22 +447,6 @@ async def get_appointment(appointment_id: int) -> Optional[Appointment]:
     """
     async with async_session() as session:
         stmt = select(Appointment).where(Appointment.id == appointment_id)
-        result = await session.execute(stmt)
-        return result.scalars().first()
-
-
-async def get_appointment_by_users(tg_id_user: int, tg_id_master: int) -> Optional[Appointment]:
-    """
-    Возвращает запись на приём по Telegram ID клиента и мастера.
-    :param tg_id_user: Telegram ID клиента.
-    :param tg_id_master: Telegram ID мастера.
-    :return: Объект Appointment или None, если не найден.
-    """
-    async with async_session() as session:
-        stmt = select(Appointment).where(
-            Appointment.tg_id_user == tg_id_user,
-            Appointment.tg_id_master == tg_id_master
-        )
         result = await session.execute(stmt)
         return result.scalars().first()
 
@@ -631,7 +629,7 @@ async def update_order(order_id: int, **kwargs) -> bool:
     if not kwargs:
         return False
 
-    # 🔒 Получаем список допустимых имён колонок из модели
+    # Получаем список допустимых имён колонок из модели
     allowed_columns = set(Orders.__table__.columns.keys())
 
     # Фильтруем только разрешённые и не-None поля
@@ -660,3 +658,34 @@ async def delete_order(order_id: int) -> bool:
         result = await session.execute(stmt)
         await session.commit()
         return result.rowcount > 0
+
+
+# ==============================
+# ИСТОРИЯ ЗАПРОСОВ API - history
+# ==============================
+async def save_search_history(
+    tg_id: int,
+    code_dtc: str,
+    description: str,
+    possible_reasons: list[str]
+) -> None:
+    """
+    Сохраняет запись в историю DTC-поиска.
+    :param tg_id: Telegram ID пользователя
+    :param code_dtc: Код ошибки (например, P0300)
+    :param description: Описание ошибки
+    :param possible_reasons: Список возможных причин (будет сохранён как строка с разделителем '\n')
+    """
+    # Преобразуем список причин в строку
+    reasons_str = "\n".join(possible_reasons) if isinstance(possible_reasons, list) else str(possible_reasons)
+
+    async with async_session() as session:
+        history_entry = History(
+            tg_id=tg_id,
+            code_dtc=code_dtc,
+            description=description,
+            possible_reasons=reasons_str
+            # created_at будет установлен автоматически
+        )
+        session.add(history_entry)
+        await session.commit()

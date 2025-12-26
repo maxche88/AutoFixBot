@@ -1,8 +1,23 @@
 import os
 from dotenv import load_dotenv
+from pathlib import Path
 
 
 load_dotenv()
+
+
+class LoggingConfig:
+    LOG_DIR = Path("logs")
+    LOG_LEVEL = "INFO"
+
+    # Имена файлов для разных категорий
+    BOT_LOG_FILE = "bot.log"
+    DB_LOG_FILE = "database.log"
+    API_LOG_FILE = "api.log"
+
+    @classmethod
+    def ensure_log_dir(cls):
+        cls.LOG_DIR.mkdir(exist_ok=True)
 
 
 class Config:

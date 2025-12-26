@@ -115,3 +115,14 @@ class Diagnostics(Base):
     client_tg_id: Mapped[int] = mapped_column(BigInteger, comment="Telegram ID клиента")
     order_id: Mapped[int] = mapped_column(BigInteger, nullable=True, comment="ID связанного заказа (Orders.id)")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=current_time, comment="Дата добавления записи")
+
+
+class History(Base):
+    __tablename__ = "history"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tg_id: Mapped[int] = mapped_column(BigInteger, comment="tg_id пользователя")
+    code_dtc: Mapped[str] = mapped_column(String(30), comment="Код неисправности")
+    description: Mapped[str] = mapped_column(String(30), comment="Описание ошибки")
+    possible_reasons: Mapped[str] = mapped_column(String(30), comment="Возможные причины")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=current_time, comment="Дата добавления записи")
