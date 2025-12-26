@@ -12,7 +12,7 @@ from config import config
 
 def auth_menu():
     kb_list = [
-        [InlineKeyboardButton(text='🔆 АВТОРИЗАЦИЯ 🔆', callback_data='authorization')]
+        [InlineKeyboardButton(text='🔆 Регистрация 🔆', callback_data='registration')]
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb_list)
 

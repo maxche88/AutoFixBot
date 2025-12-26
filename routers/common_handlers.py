@@ -92,9 +92,9 @@ class QuickQuestionToMaster(StatesGroup):
 
 
 # ==============================
-# АВТОРИЗАЦИЯ
+# РЕГИСТРАЦИЯ registration
 # ==============================
-@router.callback_query(F.data == "authorization")
+@router.callback_query(F.data == "registration")
 async def reg_one(call: CallbackQuery, state: FSMContext) -> None:
     """Начинает процесс регистрации при нажатии кнопки 'Авторизация'."""
     user_id = call.from_user.id
@@ -103,7 +103,7 @@ async def reg_one(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer("Вы уже авторизированы", show_alert=True)
         return
 
-    logger.info(f"Пользователь {user_id} начал процесс авторизации.")
+    logger.info(f"Пользователь {user_id} начал процесс регистрации.")
 
     auth_message_id = call.message.message_id
 
@@ -218,10 +218,11 @@ async def confirm_registration(call: CallbackQuery, state: FSMContext) -> None:
         )
 
     user_id = data.get("user_id")
+    user_name = data.get("user_name")
     # Сохраняем пользователя
     new_user = {
         "tg_id": user_id,
-        "user_name": data.get("user_name"),
+        "user_name": user_name,
         "status": "Клиент",
         "rating": 1,
         "contact": data.get("tel"),
@@ -230,10 +231,11 @@ async def confirm_registration(call: CallbackQuery, state: FSMContext) -> None:
 
     # Отправляем финальные сообщения
     await call.message.answer_photo(photo=titul_img)
-    await call.message.answer(
-        f"{'⚙'* 12}\n"
-        f"Поздравляем, вы авторизированы!\n"
-        f"Теперь вы можете пользоваться данным сервисом.",
+    await call.message.answer("📁 <b>ГЛАВНОЕ МЕНЮ</b>\n\n"
+                              f"<b>Поздравляем, {user_name}! Вы зарегистрированы.</b>\n"
+                              "Здесь вы найдёте всё необходимое для взаимодействия с данным сервисом: "
+                              "запись, ремонт, поддержка и полезная информация.\n\n"
+                              "Выберите нужный раздел ниже 👇",
         reply_markup=kb.user_main_menu()
     )
 
@@ -250,7 +252,7 @@ async def cancel_registration(call: CallbackQuery, state: FSMContext) -> None:
 
     # Возвращаем в меню авторизации
     await call.message.answer(
-        "<b>Пожалуйста, пройдите быструю Авторизацию</b>",
+        "<b>Пожалуйста, пройдите быструю Регистрацию</b>",
         reply_markup=kb.auth_menu()
     )
 
@@ -283,7 +285,7 @@ async def cmd_start(message: types.Message) -> None:
 
     if role is None:
         await message.answer(
-            f"{name}, <b>пожалуйста, пройдите быструю АВТОРИЗАЦИЮ.</b>\n"
+            f"{name}, <b>пожалуйста, пройдите быструю РЕГИСТРАЦИЮ.</b>\n"
             "Это обязательная процедура для использования сервиса!",
             reply_markup=kb.auth_menu()
         )
@@ -328,7 +330,7 @@ async def cmd_start(message: types.Message) -> None:
         reply_markup = kb.user_main_menu()
 
     else:
-        text = "Добро пожаловать! Пройдите авторизацию."
+        text = "Добро пожаловать! Пройдите регистрацию."
         reply_markup = kb.auth_menu()
 
     await message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
