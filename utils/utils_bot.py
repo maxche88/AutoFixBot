@@ -5,7 +5,7 @@ from aiogram.exceptions import TelegramAPIError
 from config import config
 
 
-async def delete_messages_after_delay(
+async def message_deleter(
         bot: Bot,
         chat_id: int,
         message_ids: List[int],

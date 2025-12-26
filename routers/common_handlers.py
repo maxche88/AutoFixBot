@@ -24,7 +24,7 @@ from database.requests import (get_user_role, add_user, add_comment, add_grade, 
                                can_mess_true, get_orders_by_user, update_order, get_visible_comments,
                                get_filter_appointments)
 from utils.time_bot import get_greeting
-from utils.utils_bot import delete_messages_after_delay
+from utils.utils_bot import message_deleter
 from config import config
 from aiogram.exceptions import TelegramAPIError
 import logging
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 router = Router()
 
-titul_img = FSInputFile("img/titul.jpg")
+titul_img = FSInputFile("img/titul.png")
 
 
 # ==============================
@@ -209,7 +209,7 @@ async def confirm_registration(call: CallbackQuery, state: FSMContext) -> None:
     # Удаляем ВСЕ временные сообщения через delay
     if message_ids:
         _ = asyncio.create_task(
-                delete_messages_after_delay(
+                message_deleter(
                     bot=bot,
                     chat_id=call.message.chat.id,
                     message_ids=message_ids,
@@ -261,7 +261,7 @@ async def cancel_registration(call: CallbackQuery, state: FSMContext) -> None:
     message_ids = list(set(msg_id for msg_id in message_ids if msg_id))
     if message_ids:
         _ = asyncio.create_task(
-                delete_messages_after_delay(
+                message_deleter(
                     bot=bot,
                     chat_id=call.message.chat.id,
                     message_ids=message_ids,
@@ -321,7 +321,7 @@ async def cmd_start(message: types.Message) -> None:
         text = (
             "📁 <b>ГЛАВНОЕ МЕНЮ</b>\n\n"
             f"<b>{greeting} {user_name}</b>\n"
-            "Здесь вы найдёте всё необходимое для взаимодействия с автосервисом: "
+            "Здесь вы найдёте всё необходимое для взаимодействия с данным сервисом: "
             "запись, ремонт, поддержка и полезная информация.\n\n"
             "Выберите нужный раздел ниже 👇"
         )
@@ -360,7 +360,7 @@ async def back_to_main_menu(call: CallbackQuery):
     """Возвращает пользователя в основное меню."""
     menu_text = (
         "📁 <b>ГЛАВНОЕ МЕНЮ</b>\n\n"
-        "Здесь вы найдёте всё необходимое для взаимодействия с автосервисом: "
+        "Здесь вы найдёте всё необходимое для взаимодействия с данным сервисом: "
         "запись, ремонт, поддержка и полезная информация.\n\n"
         "Выберите нужный раздел ниже 👇"
     )
@@ -920,7 +920,7 @@ async def handle_custom_text_response(message: Message, state: FSMContext):
 
     # Запускаем отложенное удаление всех сообщений (запрос + ввод + подтверждение)
     _ = asyncio.create_task(
-        delete_messages_after_delay(
+        message_deleter(
             bot=bot,
             chat_id=chat_id,
             message_ids=message_ids
@@ -1065,7 +1065,7 @@ async def save_and_send_support_message_to_all(message: Message, state: FSMConte
     # Удаляем сообщения через отложенный вызов
     message_ids_to_delete = [message.message_id, success_msg.message_id]
     _ = asyncio.create_task(
-        delete_messages_after_delay(
+        message_deleter(
             bot=bot,
             chat_id=message.chat.id,
             message_ids=message_ids_to_delete,
@@ -1142,7 +1142,7 @@ async def save_comment_text(message: Message, state: FSMContext):
 
     # ЕДИНСТВЕННЫЙ вызов удаления
     _ = asyncio.create_task(
-        delete_messages_after_delay(
+        message_deleter(
             bot=bot,
             chat_id=message.chat.id,
             message_ids=message_ids_to_delete
@@ -1269,7 +1269,7 @@ async def save_edited_field(message: Message, state: FSMContext) -> None:
     # Запускаем автоматическое удаление
     if message_ids:
         _ = asyncio.create_task(
-                delete_messages_after_delay(
+                message_deleter(
                     bot=bot,
                     chat_id=message.chat.id,
                     message_ids=message_ids
@@ -1291,10 +1291,7 @@ async def about_service(call: CallbackQuery) -> None:
         "▫️Мы работаем уже более 20 лет и предоставляем качественный ремонт "
         "отечественных и импортных авто. Огромный опыт.\n"
         "▫️Специализация: диагностика и устранение неисправностей любой сложности.\n"
-        "▫️Гарантируем качественный и оперативный ремонт.\n\n"
-        "<i>Если авто заводится и глохнет, троит мотор и стал\n"
-        "не ярок свет!? Найдём ответ — решим проблему.\n"
-        "Езжай в компанию РАССВЕТ!</i>"
+        "▫️Гарантируем качественный и оперативный ремонт."
     )
     await call.message.answer_photo(photo=info_img, caption=caption, reply_markup=kb.user_info_menu())
 
@@ -1472,7 +1469,7 @@ async def process_client_reply(message: Message, state: FSMContext):
 
     # Запускаем удаление
     _ = asyncio.create_task(
-        delete_messages_after_delay(bot=bot, chat_id=message.chat.id, message_ids=message_ids_to_delete)
+        message_deleter(bot=bot, chat_id=message.chat.id, message_ids=message_ids_to_delete)
     )
 
     await state.clear()

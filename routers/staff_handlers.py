@@ -13,7 +13,7 @@ from keybords import keybords as kb
 from datetime import date, timedelta
 import logging
 from utils.time_bot import get_greeting
-from utils.utils_bot import delete_messages_after_delay
+from utils.utils_bot import message_deleter
 from api.car_api import decode_obd2_code
 
 
@@ -277,7 +277,7 @@ async def save_edited_field(message: Message, state: FSMContext) -> None:
     # Запускаем автоматическое удаление
     if message_ids:
         _ = asyncio.create_task(
-                delete_messages_after_delay(
+                message_deleter(
                     bot=bot,
                     chat_id=message.chat.id,
                     message_ids=message_ids
@@ -620,7 +620,7 @@ async def send_custom_message_to_client(message: Message, state: FSMContext):
     # Запускаем отложенное удаление
     if temp_ids:
         _ = asyncio.create_task(
-            delete_messages_after_delay(
+            message_deleter(
                 bot=bot,
                 chat_id=message.chat.id,
                 message_ids=temp_ids
@@ -1559,7 +1559,7 @@ async def create_repair_order(call: CallbackQuery, state: FSMContext):
     temp_ids = data.get("temp_message_ids", [])
     if temp_ids:
         _ = asyncio.create_task(
-            delete_messages_after_delay(
+            message_deleter(
                 bot=call.bot,
                 chat_id=call.message.chat.id,
                 message_ids=temp_ids
@@ -1673,7 +1673,7 @@ async def in_dtc_text(message: Message, state: FSMContext) -> None:
     # УДАЛЕНИЕ временных сообщений (только если НЕ success)
     if not success and temp_ids:
         _ = asyncio.create_task(
-                delete_messages_after_delay(
+                message_deleter(
                     bot=message.bot,
                     chat_id=message.chat.id,
                     message_ids=temp_ids
