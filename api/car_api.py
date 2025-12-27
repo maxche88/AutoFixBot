@@ -1,12 +1,21 @@
-from config import config
+import json
+import os
+from config import api_config
 import aiohttp
 
-API_KEY = config.RAPID_API_KEY
-BASE_URL = "https://car-code.p.rapidapi.com/obd2/"
-HEADERS = {
-    "x-rapidapi-host": "car-code.p.rapidapi.com",
-    "x-rapidapi-key": API_KEY
-}
+
+# Загрузка мок-данных из файла
+MOCK_DATA_PATH = os.path.join(os.path.dirname(__file__), "mock_obd2.json")
+
+try:
+    with open(MOCK_DATA_PATH, "r", encoding="utf-8") as f:
+        MOCK_RESPONSES = json.load(f)
+except FileNotFoundError:
+    MOCK_RESPONSES = {}
+    print(f"Файл мок-данных не найден: {MOCK_DATA_PATH}")
+except json.JSONDecodeError as e:
+    MOCK_RESPONSES = {}
+    print(f"Ошибка чтения JSON в {MOCK_DATA_PATH}: {e}")
 
 
 async def decode_obd2_code(code: str) -> dict | None:
@@ -19,14 +28,17 @@ async def decode_obd2_code(code: str) -> dict | None:
     if not code or len(code) < 4:
         return None
 
-    url = f"{BASE_URL}{code}"
+    # Если включён мок — возвращаем локальные данные
+    if api_config.USE_MOCK_API:
+        return MOCK_RESPONSES.get(code)
 
+    # Иначе — идём в настоящий API
+    url = f"{api_config.BASE_URL}{code}"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=HEADERS) as resp:
+            async with session.get(url, headers=api_config.headers) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    # Ожидаем: {'code': 'P0001', 'definition': '...', 'cause': [...]}
                     return {
                         "code": data.get("code", code),
                         "definition": data.get("definition", "Описание недоступно"),

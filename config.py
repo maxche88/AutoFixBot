@@ -20,11 +20,23 @@ class LoggingConfig:
         cls.LOG_DIR.mkdir(exist_ok=True)
 
 
+class CarApiConfig:
+    def __init__(self):
+        self.RAPID_API_KEY = os.getenv("RAPID_API_KEY", "")
+        self.USE_MOCK_API = False
+        self.BASE_URL = "https://car-code.p.rapidapi.com/obd2/"
+
+    @property
+    def headers(self):
+        return {
+            "x-rapidapi-host": "car-code.p.rapidapi.com",
+            "x-rapidapi-key": self.RAPID_API_KEY
+        }
+
+
 class Config:
     API_TOKEN = os.getenv("API_TOKEN")
     ADMIN_ID = os.getenv("ADMIN_ID")
-
-    RAPID_API_KEY = os.getenv("RAPID_API_KEY")
 
     TEMP_MESSAGE_LIFETIME_SEC: int = 5  # время жизни временных сообщений (в секундах)
 
@@ -45,3 +57,4 @@ class Config:
 
 
 config = Config()
+api_config = CarApiConfig()

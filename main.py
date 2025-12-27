@@ -23,16 +23,10 @@ async def main():
     try:
         # Инициализация базы данных
         await init_db()
-        logger.info("База данных инициализирована.")
-
         # Создание администратора при первом запуске
         await init_admin_user()
-        logger.info("Пользователь-админ создан.")
-
         # Запуск бота
-        logger.info("Бот запущен.")
         await dp.start_polling(bot)
-
     except Exception:
         logger.critical("Критическая ошибка при запуске бота", exc_info=True)
         raise

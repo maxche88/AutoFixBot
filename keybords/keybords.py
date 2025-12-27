@@ -56,14 +56,14 @@ def user_personal_account():
     return InlineKeyboardMarkup(inline_keyboard=kb_list)
 
 
-# КЛИЕНТ. ВОЗВРАЩАЕТ В ЛИЧНЫЙ КАБ ИЗ ТЕКУЩИХ ЗАКАЗОВ
+# КЛИЕНТ. ВОЗВРАЩАЕТСЯ В ЛИЧНЫЙ КАБ ИЗ ТЕКУЩИХ ЗАКАЗОВ
 def user_back_personal_account() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="back_to_account")]
     ])
 
 
-# КЛИЕНТ. ВОЗВРАЩАЕТ В ЛИЧНЫЙ КАБ ИЗ ЗАДАТЬ ВОПРОС
+# КЛИЕНТ. ВОЗВРАЩАЕТСЯ В ЛИЧНЫЙ КАБ ИЗ ЗАДАТЬ ВОПРОС
 def user_return_to_profile():
     kb_list = [
         [InlineKeyboardButton(text="🔺 Отмена 🔺", callback_data='back_personal_account')]
@@ -320,11 +320,15 @@ def staff_menu(index: list):
         3: InlineKeyboardButton(text="🔹 ВКЛЮЧИТЬ СООБЩЕНИЯ 🔹", callback_data='master_edit:can_mess_on'),
         10: InlineKeyboardButton(text="🔹 ОТКЛЮЧИТЬ СООБЩЕНИЯ 🔹", callback_data='master_edit:can_mess_off'),
         4: InlineKeyboardButton(text="🔺 Назад 🔺", callback_data='cancel'),
-        5: InlineKeyboardButton(text="🔹 РАСШИФРОВКА КОДОВ DTC 🔹", callback_data='dtc_decoding'),
-        6: InlineKeyboardButton(text="🔹 ПРОСМОТР СТАТИСТИКИ 🔹", callback_data='view_statistics'),
-        7: InlineKeyboardButton(text="🔹 ИСТОРИЯ ЗАПРОСОВ API 🔹", callback_data='history'),
-        8: InlineKeyboardButton(text="🔺 Назад 🔺", callback_data='back_master_main_menu'),
+        5: InlineKeyboardButton(text="🔹 РАСШИФРОВКА DTC КОДОВ API 🔹", callback_data='dtc_decoding'),
+        11: InlineKeyboardButton(text="🔹 ВВЕСТИ ВРУЧНУЮ 🔹", callback_data="manual_dtc_input"),
+        6: InlineKeyboardButton(text="🔹 HIGH/LOW ФИЛЬТР 🔹", callback_data='view_hl:st'),
+        7: InlineKeyboardButton(text="🔹 ИСТОРИЯ API 🔹", callback_data='history_api'),
+        8: InlineKeyboardButton(text="🔺 Назад 🔺", callback_data='master_back_main_menu'),
         9: InlineKeyboardButton(text="🔹 ПРОДОЛЖИТЬ 🔹", callback_data='car_rep_next'),
+        12: InlineKeyboardButton(text="🔹 HIGH 🔹", callback_data='hl:high'),
+        13: InlineKeyboardButton(text="🔹 LOW 🔹", callback_data='hl:low'),
+        14: InlineKeyboardButton(text="🔺 Назад 🔺", callback_data='view_hl:bk'),
     }
 
     inline_buttons = [[buttons_dict[idx]] for idx in index if idx in buttons_dict]
@@ -513,3 +517,22 @@ def generate_duration_buttons(user_id: int):
 
     rows.append([InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def generate_order_select_buttons(orders: list[dict]) -> InlineKeyboardMarkup:
+    """
+    Генерирует кнопки выбора активного заказа.
+    Каждая кнопка: "Марка Модель Год"
+    Callback: select_order:<order_id>:<brand>:<model>:<year>
+    """
+    buttons = []
+    for order in orders:
+        brand = order.get("brand_auto", "-") or "-"
+        model = order.get("model_auto", "-") or "-"
+        year = order.get("year_auto", "-") or "-"
+        text = f"{brand} {model} ({year})"
+        callback = f"select_order:{order['id']}:{brand}:{model}:{year}"
+        buttons.append([InlineKeyboardButton(text=text, callback_data=callback)])
+    buttons.append([InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+

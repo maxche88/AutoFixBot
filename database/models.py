@@ -4,7 +4,7 @@
 Все модели наследуются от общего базового класса `Base`.
 """
 
-from sqlalchemy import String, BigInteger, Boolean, Date, DateTime, Time
+from sqlalchemy import String, BigInteger, Boolean, Date, DateTime, Time, Text
 from sqlalchemy.orm import Mapped, mapped_column, DeclarativeBase
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from datetime import datetime, time
@@ -102,27 +102,20 @@ class Comments(Base):
 
 class Diagnostics(Base):
     __tablename__ = 'diagnostics'
+
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    brand_auto: Mapped[str] = mapped_column(String(20), comment="Марка автомобиля")
-    model_auto: Mapped[str] = mapped_column(String(30), comment="Модель автомобиля")
-    year_auto: Mapped[str] = mapped_column(String(10), comment="Год выпуска")
-    symptoms_and_causes: Mapped[str] = mapped_column(
+    entry_type: Mapped[str] = mapped_column(String(20), comment="Тип записи: 'api_dtc', 'manual_dtc'")
+    brand_auto: Mapped[str] = mapped_column(String(20), default="-", nullable=False, comment="Марка автомобиля")
+    model_auto: Mapped[str] = mapped_column(String(30), default="-", nullable=False, comment="Модель автомобиля")
+    year_auto: Mapped[str] = mapped_column(String(10), default="-", nullable=False, comment="Год выпуска")
+
+    issue_and_causes: Mapped[str] = mapped_column(
         String(1000),
         default="{}",
-        comment="JSON: {\"симптом или DTC\": \"причина\"}"
+        comment='JSON: {"code"/"симптом": "...", "definition"/"описание": "...", "causes": [...]}'
     )
-    master_tg_id: Mapped[int] = mapped_column(BigInteger, comment="Telegram ID мастера, добавившего запись")
-    client_tg_id: Mapped[int] = mapped_column(BigInteger, comment="Telegram ID клиента")
-    order_id: Mapped[int] = mapped_column(BigInteger, nullable=True, comment="ID связанного заказа (Orders.id)")
+
+    tg_id: Mapped[int] = mapped_column(BigInteger, comment="Telegram ID пользователя, создавшего запись")
+    order_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, comment="ID заказа (Orders.id)")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=current_time, comment="Дата добавления записи")
 
-
-class History(Base):
-    __tablename__ = "history"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    tg_id: Mapped[int] = mapped_column(BigInteger, comment="tg_id пользователя")
-    code_dtc: Mapped[str] = mapped_column(String(30), comment="Код неисправности")
-    description: Mapped[str] = mapped_column(String(30), comment="Описание ошибки")
-    possible_reasons: Mapped[str] = mapped_column(String(30), comment="Возможные причины")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=current_time, comment="Дата добавления записи")

@@ -5,12 +5,13 @@
 Все функции асинхронные и работают через session-обёртку.
 """
 
-from database.models import User, Comments, Orders, Appointment, History
+from database.models import User, Comments, Orders, Appointment, Diagnostics
 from database.engine import async_session
 from sqlalchemy import func, update, select, delete, and_
 from datetime import datetime, timedelta, date, time
 from typing import Optional, Tuple, List, Dict, Any
-from config import config
+from config import config, api_config
+import json
 
 
 def connection(func_):
@@ -661,31 +662,171 @@ async def delete_order(order_id: int) -> bool:
 
 
 # ==============================
-# ИСТОРИЯ ЗАПРОСОВ API - history
+# Diagnostics
 # ==============================
-async def save_search_history(
+
+
+async def save_manual_diagnostic_record(
     tg_id: int,
-    code_dtc: str,
-    description: str,
-    possible_reasons: list[str]
+    entry_type: str,
+    issue_and_causes: str,
+    brand_auto: str,
+    model_auto: str,
+    year_auto: str,
+    order_id: int | None = None
 ) -> None:
     """
-    Сохраняет запись в историю DTC-поиска.
-    :param tg_id: Telegram ID пользователя
-    :param code_dtc: Код ошибки (например, P0300)
-    :param description: Описание ошибки
-    :param possible_reasons: Список возможных причин (будет сохранён как строка с разделителем '\n')
+    Сохраняет ручную запись диагностики (мастером или админом).
+    Поддерживаемые типы:
+      - 'manual_dtc'     — DTC-код введён вручную
+      - 'symptom_manual' — текстовый симптом/описание неисправности
+
+    Все поля авто обязательны (передаются явно).
+    Поле issue_and_causes должно быть валидной JSON-строкой (может быть пустой структурой).
+
+    :param tg_id: Telegram ID пользователя, создавшего запись.
+    :param entry_type: 'manual_dtc' или 'symptom_manual'.
+    :param issue_and_causes: JSON-строка вида {"ключ": "...", "causes": [...]}
+    :param brand_auto: Марка авто (обязательно).
+    :param model_auto: Модель авто (обязательно).
+    :param year_auto: Год выпуска (обязательно).
+    :param order_id: ID связанного заказа (опционально).
     """
-    # Преобразуем список причин в строку
-    reasons_str = "\n".join(possible_reasons) if isinstance(possible_reasons, list) else str(possible_reasons)
+    if entry_type not in ("manual_dtc", "symptom_manual"):
+        raise ValueError("entry_type must be 'manual_dtc' or 'symptom_manual'")
+
+    if not isinstance(issue_and_causes, str):
+        raise TypeError("issue_and_causes must be a JSON string")
 
     async with async_session() as session:
-        history_entry = History(
+        record = Diagnostics(
+            entry_type=entry_type,
+            brand_auto=brand_auto,
+            model_auto=model_auto,
+            year_auto=year_auto,
+            issue_and_causes=issue_and_causes,
             tg_id=tg_id,
-            code_dtc=code_dtc,
-            description=description,
-            possible_reasons=reasons_str
-            # created_at будет установлен автоматически
+            order_id=order_id
         )
-        session.add(history_entry)
+        session.add(record)
         await session.commit()
+
+
+async def get_diagnostics_by_filter(filter_type: str) -> list[dict]:
+    """
+    Возвращает список записей из таблицы diagnostics в виде словарей,
+    содержащих только распарсенный `issue_and_causes` (в виде dict),
+    отфильтрованных по типу:
+      - 'high' → entry_type = 'api_dtc'
+      - 'low'  → entry_type = 'manual_dtc'
+
+    :param filter_type: 'high' или 'low'
+    :return: list[dict], где каждый dict — это содержимое issue_and_causes
+    :raises ValueError: если filter_type не 'high' или 'low'
+    """
+    if filter_type not in ("high", "low"):
+        raise ValueError("filter_type must be 'high' or 'low'")
+
+    entry_type = "api_dtc" if filter_type == "high" else "manual_dtc"
+
+    async with async_session() as session:
+        stmt = select(Diagnostics.issue_and_causes).where(
+            Diagnostics.entry_type == entry_type
+        )
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
+
+    parsed_list = []
+    for raw_json in rows:
+        try:
+            parsed = json.loads(raw_json)
+            # Убеждаемся, что это dict
+            if isinstance(parsed, dict):
+                parsed_list.append(parsed)
+        except (json.JSONDecodeError, TypeError):
+            continue  # пропускаем битые записи
+
+    return parsed_list
+
+
+async def get_api_dtc_history() -> list[dict]:
+    """
+    Возвращает все записи с entry_type='api_dtc' из таблицы diagnostics,
+    отсортированные по дате создания (от старых к новым).
+    Каждый элемент — словарь с ключами: code, definition, causes, created_at.
+    """
+    async with async_session() as session:
+        stmt = select(
+            Diagnostics.issue_and_causes,
+            Diagnostics.created_at
+        ).where(
+            Diagnostics.entry_type == "api_dtc"
+        ).order_by(Diagnostics.created_at.asc())
+        result = await session.execute(stmt)
+        rows = result.fetchall()
+
+    history_list = []
+    for row in rows:
+        try:
+            data = json.loads(row.issue_and_causes)
+            if isinstance(data, dict):
+                history_list.append({
+                    "code": data.get("code", "—"),
+                    "definition": data.get("definition", "—"),
+                    "causes": data.get("causes", []),
+                    "created_at": row.created_at
+                })
+        except (json.JSONDecodeError, TypeError):
+            continue  # пропускаем битые записи
+    return history_list
+
+
+async def save_api_dtc_record(
+    tg_id: int,
+    code: str,
+    definition: str,
+    causes: list[str]
+) -> bool:
+    """
+    Сохраняет расшифровку DTC-кода из внешнего API в таблицу diagnostics.
+    Работает ТОЛЬКО если api_config.USE_MOCK_API == False.
+    Проверяет дубликаты по коду и типу 'api_dtc'.
+    Поля авто не заполняются (остаются по умолчанию "-").
+
+    :param tg_id: Telegram ID мастера, инициировавшего запрос.
+    :param code: DTC-код (например, "P0300").
+    :param definition: Описание ошибки.
+    :param causes: Список возможных причин.
+    :return: True — если запись создана, False — если мок включён или запись уже существует.
+    """
+    if api_config.USE_MOCK_API:
+        return False
+
+    # Проверка дубликата
+    async with async_session() as session:
+        existing = await session.scalar(
+            select(Diagnostics).where(
+                Diagnostics.entry_type == "api_dtc",
+                Diagnostics.issue_and_causes.like(f'%"{code}"%')
+            )
+        )
+        if existing:
+            return False
+
+        # Формируем JSON
+        issue_and_causes = json.dumps({
+            "code": code,
+            "definition": definition,
+            "causes": causes
+        }, ensure_ascii=False)
+
+        # Создаём запись
+        record = Diagnostics(
+            entry_type="api_dtc",
+            issue_and_causes=issue_and_causes,
+            tg_id=tg_id,
+            order_id=None  # API-запрос вне контекста заказа
+        )
+        session.add(record)
+        await session.commit()
+        return True

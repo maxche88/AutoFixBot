@@ -4,8 +4,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from database.requests import (get_user_dict, get_available_hours, create_appointment, get_active_order_id, add_order,
                                get_orders_by_user, update_order, delete_order, get_all_masters, get_filter_appointments,
-                               get_appointment, get_appointment_by_users, delete_appointment, save_search_history,
-                               update_user)
+                               get_appointment, get_appointment_by_users, delete_appointment, save_api_dtc_record,
+                               update_user, save_manual_diagnostic_record, get_diagnostics_by_filter,
+                               get_api_dtc_history)
 from bot import bot
 import asyncio
 from aiogram.exceptions import TelegramAPIError
@@ -15,6 +16,7 @@ import logging
 from utils.time_bot import get_greeting
 from utils.utils_bot import message_deleter
 from api.car_api import decode_obd2_code
+import json
 
 
 # Создаём отдельный роутер для обработки действий персонала (админов и мастеров)
@@ -66,7 +68,9 @@ class MasterEditDescription(StatesGroup):
 
 
 class MasterDtcMode(StatesGroup):
-    in_dtc = State()  # Ввод кода DTC
+    in_dtc = State()                # для API
+    manual_select_order = State()   # выбор заказа
+    manual_input_dtc = State()      # ввод DTC-кода
 
 
 class EditProfile(StatesGroup):
@@ -1584,14 +1588,15 @@ async def cancel_quick_action(call: CallbackQuery, state: FSMContext):
 async def cmd_diagnostic(call: CallbackQuery) -> None:
     menu_text = (
         "📁 <b>ДИАГНОСТИКА</b>\n\n"
-        "Расшифровка ошибок DTC, просмотр статистики по модели авто с фильтрацией "
-        "/high и /low (Высокий и низкая вероятность возникновения ошибки), история "
-        "запросов /history.\n\n"
+        "Расшифровка ошибок DTC через внешний API, ручное добавление DTC-кодов в базу данных, "
+        "фильтрация ошибок (HIGH — из API, LOW — введённые вручную) и история запросов к API."
     )
+
     await call.message.edit_text(
         text=menu_text,
-        reply_markup=kb.staff_menu([5, 6, 7, 8])
+        reply_markup=kb.staff_menu([5, 11, 6, 7, 8])
     )
+
     await call.answer()
 
 
@@ -1613,12 +1618,12 @@ async def in_dtc_text(message: Message, state: FSMContext) -> None:
     """Обрабатывает введённый DTC-код."""
     user_input = message.text.strip().upper()
 
-    # Получаем текущий список временных сообщений
+    # Получаем текущий список временных сообщений (приглашение)
     data = await state.get_data()
     temp_ids = data.get("temp_message_ids", [])
     temp_ids.append(message.message_id)  # добавляем сообщение пользователя
 
-    success = False  # флаг успешного запроса
+    success = False
 
     # ВАЛИДАЦИЯ
     if not (len(user_input) >= 4 and user_input[0] in "PBCU" and user_input[1:].replace("X", "").isalnum()):
@@ -1629,12 +1634,8 @@ async def in_dtc_text(message: Message, state: FSMContext) -> None:
             parse_mode="HTML"
         )
         temp_ids.append(error_msg.message_id)
-        # success остаётся False - сообщения удалятся, запись в БД не будет
-
     else:
-        # ЗАПРОС К API
         result = await decode_obd2_code(user_input)
-
         if not result:
             not_found_msg = await message.answer(
                 f"🔍 Код <b>{user_input}</b> не найден в базе.",
@@ -1642,67 +1643,251 @@ async def in_dtc_text(message: Message, state: FSMContext) -> None:
             )
             temp_ids.append(not_found_msg.message_id)
             logger.warning(f"Пользователь {message.from_user.id} запросил несуществующий DTC-код: {user_input}")
-            # success остаётся False
         else:
-            # УСПЕШНЫЙ ОТВЕТ
             definition = result["definition"]
             causes = result["cause"]
             causes_text = "\n".join(f"• {cause}" for cause in causes) if causes else "Причины не указаны."
-
             response = (
                 f"✅ <b>Код:</b> {result['code']}\n"
                 f"📝 <b>Описание:</b> {definition}\n\n"
                 f"🔧 <b>Возможные причины:</b>\n{causes_text}"
             )
+            # ОТПРАВЛЯЕМ РЕЗУЛЬТАТ
+            await message.answer(response, parse_mode="HTML", reply_markup=kb.staff_menu([4]))
 
-            # Отправляем — НЕ добавляем в temp_ids (остаётся до ручного закрытия)
-            await message.answer(response, parse_mode="HTML")
-
-            # Сохраняем в БД
-            await save_search_history(
+            # Сохраняем в diagnostics
+            await save_api_dtc_record(
                 tg_id=message.from_user.id,
-                code_dtc=result['code'],
-                description=definition,
-                possible_reasons=causes
+                code=result['code'],
+                definition=definition,
+                causes=causes
             )
-            success = True  # чтобы НЕ удалять успешный ответ
+            success = True
 
-    # Сохраняем обновлённый список ID
-    await state.update_data(temp_message_ids=temp_ids)
-
-    # УДАЛЕНИЕ временных сообщений (только если НЕ success)
-    if not success and temp_ids:
+    # УДАЛЯЕМ ВСЕ ВРЕМЕННЫЕ СООБЩЕНИЯ
+    if temp_ids:
         _ = asyncio.create_task(
-                message_deleter(
-                    bot=message.bot,
-                    chat_id=message.chat.id,
-                    message_ids=temp_ids
-                )
+            message_deleter(
+                bot=message.bot,
+                chat_id=message.chat.id,
+                message_ids=temp_ids
+            )
         )
 
-    # В ЛЮБОМ СЛУЧАЕ — очищаем состояние
     await state.clear()
 
 
-@router.callback_query(F.data == "back_master_main_menu")
-async def back_to_main_menu(call: CallbackQuery):
-    """Возвращает мастера в основное меню."""
+# ==============================
+# РУЧНОЙ ВВОД DTC-КОДА
+# ==============================
+
+@router.callback_query(F.data == "manual_dtc_input")
+async def cmd_manual_dtc(call: CallbackQuery, state: FSMContext):
+    """Начало: выбор активного заказа для ручного ввода DTC."""
     master_tg_id = call.from_user.id
-    greeting = await get_greeting()
-    master_data = await get_user_dict(master_tg_id, ["user_name"])
-    master_name = master_data["user_name"]
+    orders = await get_orders_by_user(tg_id_master=master_tg_id, active=True)
+    if not orders:
+        await call.answer("❌ У вас нет активных заказов.", show_alert=True)
+        return
 
-    menu_text = (
-        "📁 <b>ПАНЕЛЬ МАСТЕРА</b>\n\n"
-        f"<b>{greeting} {master_name}</b>\n"
-        "Принимайте заявки на ремонт, управляйте записями клиентов, "
-        "отвечайте на вопросы.\n\n"
-        "Выберите нужный раздел ниже 👇"
+    msg = await call.message.answer(
+        "Выберите заказ для добавления неисправности:",
+        reply_markup=kb.generate_order_select_buttons(orders)
     )
-
-    await call.message.edit_text(
-        text=menu_text,
-        reply_markup=kb.master_menu()
-    )
+    await state.update_data(temp_message_ids=[msg.message_id])
+    await state.set_state(MasterDtcMode.manual_select_order)
     await call.answer()
 
+
+@router.callback_query(MasterDtcMode.manual_select_order, F.data.startswith("select_order:"))
+async def select_order_for_manual_dtc(call: CallbackQuery, state: FSMContext):
+    """Выбор заказа → сразу запрашиваем ввод DTC-кода."""
+    parts = call.data.split(":")
+    if len(parts) != 5:
+        await call.answer("❌ Ошибка данных", show_alert=True)
+        return
+    order_id = int(parts[1])
+    brand, model, year = parts[2], parts[3], parts[4]
+
+    await state.update_data(
+        order_id=order_id,
+        brand_auto=brand,
+        model_auto=model,
+        year_auto=year
+    )
+
+    prompt = (
+        "✍️ Введите данные <b>в одном сообщении</b> в формате:\n"
+        "<code>код:описание:причина1, причина2, причина3</code>\n\n"
+        "Пример:\n<code>P0171:бедная смесь:Забитые форсунки, низкое давление топлива</code>"
+    )
+    msg = await call.message.edit_text(prompt, parse_mode="HTML")
+    await state.update_data(temp_message_ids=[msg.message_id])
+    await state.set_state(MasterDtcMode.manual_input_dtc)
+    await call.answer()
+
+
+@router.message(MasterDtcMode.manual_input_dtc)
+async def handle_manual_dtc_input(message: Message, state: FSMContext):
+    """Обрабатывает ввод DTC-кода и сохраняет в diagnostics как manual_dtc."""
+    user_input = message.text.strip()
+    data = await state.get_data()
+    temp_ids = data.get("temp_message_ids", [])
+    temp_ids.append(message.message_id)
+    success = False
+
+    try:
+        parts = user_input.split(":", 2)
+        if len(parts) != 3:
+            raise ValueError("Требуется 3 части через ':'")
+
+        code, definition, causes_str = [p.strip() for p in parts]
+        if not code or not definition:
+            raise ValueError("Код или описание пусты")
+
+        # Валидация: должен быть корректный DTC-код
+        if not (len(code) >= 4 and code[0].upper() in "PBCU" and code[1:].replace("X", "").isalnum()):
+            raise ValueError("Некорректный формат DTC-кода")
+
+        causes = [c.strip() for c in causes_str.split(",") if c.strip()]
+        if not causes:
+            raise ValueError("Укажите хотя бы одну причину")
+
+        # Формируем JSON в едином формате (как у API)
+        issue_and_causes = json.dumps({
+            "code": code,
+            "definition": definition,
+            "causes": causes
+        }, ensure_ascii=False)
+
+        # Извлекаем данные заказа
+        brand = data["brand_auto"]
+        model = data["model_auto"]
+        year = data["year_auto"]
+        order_id = data["order_id"]
+
+        # Сохраняем
+        await save_manual_diagnostic_record(
+            tg_id=message.from_user.id,
+            entry_type="manual_dtc",
+            issue_and_causes=issue_and_causes,
+            brand_auto=brand,
+            model_auto=model,
+            year_auto=year,
+            order_id=order_id
+        )
+        success = True
+
+    except Exception as e:
+        logger.warning(f"Ошибка ручного ввода DTC: {e}")
+        error_msg = await message.answer(
+            "❌ Неверный формат. Используйте:\n<code>P0171:описание:причина1, причина2</code>", parse_mode="HTML")
+        temp_ids.append(error_msg.message_id)
+
+    # Удаляем все сообщения
+    for msg_id in temp_ids:
+        try:
+            await message.bot.delete_message(message.chat.id, msg_id)
+        except:
+            pass
+
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("view_hl:"))
+async def cmd_view_hl(call: CallbackQuery):
+    """Показывает выбор фильтра: HIGH или LOW."""
+    action = call.data.split(":", 1)[1]  # 'st' или 'bk'
+
+    text = (
+        "📈 Выберите тип фильтрации:\n"
+        "🔹 <b>HIGH</b> — ошибки из внешнего API\n"
+        "🔹 <b>LOW</b> — ошибки, введённые вручную\n"
+    )
+
+    if action == "st":
+        # Первый вход — добавляем новое сообщение
+        await call.message.answer(
+            text=text,
+            parse_mode="HTML",
+            reply_markup=kb.staff_menu([12, 13, 4])
+        )
+    elif action == "bk":
+        # Возврат — редактируем текущее сообщение
+        await call.message.edit_text(
+            text=text,
+            parse_mode="HTML",
+            reply_markup=kb.staff_menu([12, 13, 4])
+        )
+    else:
+        await call.answer("❌ Неверное действие", show_alert=True)
+        return
+
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("hl:"))
+async def handle_hl_filter_button(call: CallbackQuery, state: FSMContext):
+    filter_type = call.data.split(":", 1)[1]
+    if filter_type not in ("high", "low"):
+        await call.answer("❌ Неверный фильтр", show_alert=True)
+        return
+
+    try:
+        records = await get_diagnostics_by_filter(filter_type)
+    except Exception as e:
+        logger.error(f"Ошибка при фильтрации диагностики: {e}")
+        await call.answer("❌ Ошибка при загрузке данных.", show_alert=True)
+        await state.clear()
+        return
+
+    # Формируем заголовок
+    title = "📈 Ошибки из внешнего API (HIGH)" if filter_type == "high" else "📉 Ошибки, введённые вручную (LOW)"
+
+    if not records:
+        response_text = f"📭 Нет записей для фильтра: {title}"
+    else:
+        lines = [f"<b>{title}</b> (всего: {len(records)}):"]
+        for item in records:
+            code = item.get("code")
+            desc = item.get("definition") or item.get("description", "—")
+            lines.append(f"• <b>{code}</b>: {desc}")
+        response_text = "\n".join(lines)
+
+    # Редактируем исходное сообщение (с выбором HIGH/LOW)
+    await call.message.edit_text(response_text, parse_mode="HTML", reply_markup=kb.staff_menu([14]))
+
+    await state.clear()
+    await call.answer()
+
+
+# ==============================
+# ИСТОРИЯ API ЗАПРОСОВ
+# ==============================
+@router.callback_query(F.data == "history_api")
+async def show_api_history(call: CallbackQuery):
+    """Показывает историю всех API-запросов в формате, аналогичном расшифровке DTC."""
+    try:
+        records = await get_api_dtc_history()
+    except Exception as e:
+        logger.error(f"Ошибка при загрузке истории API: {e}")
+        await call.answer("❌ Ошибка при загрузке истории.", show_alert=True)
+        return
+
+    if not records:
+        response_text = "📭 История API-запросов пуста."
+        await call.message.answer(response_text)
+    else:
+        blocks = []
+        for rec in records:
+            causes_text = "\n".join(f"• {cause}" for cause in rec["causes"]) if rec["causes"] else "Причины не указаны."
+            block = (
+                f"✅ <b>Код:</b> {rec['code']}\n"
+                f"📝 <b>Описание:</b> {rec['definition']}\n\n"
+                f"🔧 <b>Возможные причины:</b>\n{causes_text}"
+            )
+            blocks.append(block)
+        response_text = "\n\n------------------------------\n\n".join(blocks)
+        await call.message.answer(response_text, parse_mode="HTML", reply_markup=kb.staff_menu([4]))
+
+    await call.answer()
