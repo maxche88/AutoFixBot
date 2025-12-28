@@ -2,12 +2,12 @@ import os
 from database.models import User
 from sqlalchemy import select
 from database.engine import async_session
-from config import config
+from config import Config
 
 
 # Создаёт администратора при запуске, если его ещё нет в БД. Берёт tg_id из переменной окружения ADMIN_ID.
 async def init_admin_user():
-    admin_id_str = config.ADMIN_ID
+    admin_id_str = Config.ADMIN_ID
     if not admin_id_str:
         return
 
@@ -29,6 +29,7 @@ async def init_admin_user():
         new_admin = User(
             tg_id=admin_tg_id,
             user_name="Администратор",
+            status="-",
             role="admin",
             can_messages=True,
             rating=1000,

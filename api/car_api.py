@@ -1,6 +1,6 @@
 import json
 import os
-from config import api_config
+from config import CarApiConfig
 import aiohttp
 
 
@@ -29,14 +29,14 @@ async def decode_obd2_code(code: str) -> dict | None:
         return None
 
     # Если включён мок — возвращаем локальные данные
-    if api_config.USE_MOCK_API:
+    if CarApiConfig.USE_MOCK_API:
         return MOCK_RESPONSES.get(code)
 
     # Иначе — идём в настоящий API
-    url = f"{api_config.BASE_URL}{code}"
+    url = f"{CarApiConfig.BASE_URL}{code}"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=api_config.headers) as resp:
+            async with session.get(url, headers=CarApiConfig.headers) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     return {

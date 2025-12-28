@@ -23,6 +23,7 @@ import json
 router = Router()
 
 logger = logging.getLogger(__name__)
+api_logger = logging.getLogger("api")
 
 
 # Состояния FSM, необходимые для многошаговых сценариев персонала
@@ -124,8 +125,8 @@ async def back_to_main_menu(call: CallbackQuery):
 async def show_master_data(call: CallbackQuery) -> None:
     user_tg_id = call.from_user.id
     user_data = await get_user_dict(
-        user_tg_id,
-        ["user_name", "rating", "contact", "role", "status", "can_messages"]
+        tg_id=user_tg_id,
+        fields=["user_name", "rating", "contact", "role", "status", "can_messages"]
     )
 
     user_role = user_data["role"]
@@ -175,7 +176,7 @@ async def master_back_to_personal_account(call: CallbackQuery, state: FSMContext
 async def master_edit_menu(call: CallbackQuery, state: FSMContext) -> None:
     """Открывает меню редактирования данных мастера с динамической кнопкой уведомлений."""
     user_id = call.from_user.id
-    user_data = await get_user_dict(user_id, ["can_messages"])
+    user_data = await get_user_dict(tg_id=user_id, fields=["can_messages"])
     if not user_data:
         await call.answer("❌ Не удалось загрузить данные профиля.", show_alert=True)
         return
@@ -337,7 +338,7 @@ async def handle_appointment_period(call: CallbackQuery):
         start_time = appt["appointment_time"].strftime("%H:%M")
         end_time = appt["end_time"].strftime("%H:%M")
 
-        user_data = await get_user_dict(appt["tg_id_user"], ["user_name", "contact"])
+        user_data = await get_user_dict(tg_id=appt["tg_id_user"], fields=["user_name", "contact"])
         user_name = user_data["user_name"] if user_data else "—"
         user_contact = user_data["contact"] if user_data else "—"
 
@@ -367,7 +368,7 @@ async def handle_remind_mess(call: CallbackQuery):
     master_tg_id = call.from_user.id
 
     # Получаем имя мастера
-    user_data = await get_user_dict(master_tg_id, ["user_name"])
+    user_data = await get_user_dict(tg_id=master_tg_id, fields=["user_name"])
     master_name = user_data["user_name"] if user_data else "—"
 
     greeting = await get_greeting()
@@ -410,7 +411,7 @@ async def handle_transfer_mess(call: CallbackQuery, state: FSMContext):
         return
 
     # Сохраняем целевого пользователя
-    user_data = await get_user_dict(user_tg_id, ["user_name"])
+    user_data = await get_user_dict(tg_id=user_tg_id, fields=["user_name"])
     user_name = user_data["user_name"]
 
     await state.update_data(target_user_id=user_tg_id, user_name=user_name)
@@ -534,7 +535,7 @@ async def send_quick_pickup(call: CallbackQuery, state: FSMContext):
     master_tg_id = data["master_tg_id"]
 
     # Получаем имя мастера
-    user_data = await get_user_dict(master_tg_id, ["user_name"])
+    user_data = await get_user_dict(tg_id=master_tg_id, fields=["user_name"])
     master_name = user_data["user_name"]
 
     # Обновляем заказ: статус = wait, complied = True
@@ -598,7 +599,7 @@ async def send_custom_message_to_client(message: Message, state: FSMContext):
     client_tg_id = data["client_tg_id"]
     master_tg_id = data["master_tg_id"]
 
-    user_data = await get_user_dict(master_tg_id, ["user_name"])
+    user_data = await get_user_dict(tg_id=master_tg_id, fields=["user_name"])
     master_name = user_data["user_name"] if user_data else "—"
 
     # Отправляем сообщение клиенту
@@ -1033,7 +1034,7 @@ async def handle_call_action(call: CallbackQuery):
     user_id = int(parts[1])
     master_tg_id = call.from_user.id
 
-    user_data = await get_user_dict(master_tg_id, ["user_name", "contact"])
+    user_data = await get_user_dict(tg_id=master_tg_id, fields=["user_name", "contact"])
     master_name = user_data["user_name"] if user_data else "—"
     master_contact = user_data["contact"] if user_data else "—"
 
@@ -1054,7 +1055,7 @@ async def handle_check_time_action(call: CallbackQuery):
     client_tg_id = int(call.data.split(":", 1)[1])
     master_tg_id = call.from_user.id
 
-    user_data = await get_user_dict(master_tg_id, ["user_name"])
+    user_data = await get_user_dict(tg_id=master_tg_id, fields=["user_name"])
     master_name = user_data["user_name"] if user_data else "—"
     greeting = await get_greeting()
 
@@ -1087,7 +1088,7 @@ async def handle_set_time_action(call: CallbackQuery, state: FSMContext):
         await call.answer("Некорректный ID", show_alert=True)
         return
 
-    user_data = await get_user_dict(user_id, ["user_name"])
+    user_data = await get_user_dict(tg_id=user_id, fields=["user_name"])
     user_name = user_data["user_name"] if user_data else "—"
 
     await state.update_data(target_user_id=user_id, user_name=user_name)
@@ -1367,7 +1368,7 @@ async def handle_duration_selection(call: CallbackQuery, state: FSMContext):
     end_str = f"{int(end_hour)}:{'30' if end_hour % 1 else '00'}"
 
     # Присваиваем переменным полученое имя и номер тел.
-    user_data = await get_user_dict(master_tg_id, ["user_name", "contact"])
+    user_data = await get_user_dict(tg_id=master_tg_id, fields=["user_name", "contact"])
     master_name = user_data["user_name"] if user_data else "—"
     tel = user_data["contact"] if user_data else "—"
 
@@ -1496,8 +1497,8 @@ async def create_repair_order(call: CallbackQuery, state: FSMContext):
     client_fields = ["user_name", "contact", "brand_auto", "model_auto", "gos_num", "year_auto", "vin_number"]
     master_fields = ["user_name", "contact"]
 
-    client_data = await get_user_dict(client_tg_id, client_fields)
-    master_data = await get_user_dict(master_tg_id, master_fields)
+    client_data = await get_user_dict(tg_id=client_tg_id, fields=client_fields)
+    master_data = await get_user_dict(tg_id=master_tg_id, fields=master_fields)
 
     if not client_data or not master_data:
         await call.answer("❌ Пользователь не найден", show_alert=True)
@@ -1642,7 +1643,7 @@ async def in_dtc_text(message: Message, state: FSMContext) -> None:
                 parse_mode="HTML"
             )
             temp_ids.append(not_found_msg.message_id)
-            logger.warning(f"Пользователь {message.from_user.id} запросил несуществующий DTC-код: {user_input}")
+            api_logger.warning(f"Пользователь {message.from_user.id} запросил несуществующий DTC-код: {user_input}")
         else:
             definition = result["definition"]
             causes = result["cause"]
@@ -1777,21 +1778,25 @@ async def handle_manual_dtc_input(message: Message, state: FSMContext):
             order_id=order_id
         )
         success = True
+        api_logger.info(f"Успешно сохранён ручной DTC-код: {code} от tg_id={message.from_user.id}")
 
     except Exception as e:
-        logger.warning(f"Ошибка ручного ввода DTC: {e}")
+        api_logger.warning(f"Ошибка ручного ввода DTC: {e}")
         error_msg = await message.answer(
             "❌ Неверный формат. Используйте:\n<code>P0171:описание:причина1, причина2</code>", parse_mode="HTML")
         temp_ids.append(error_msg.message_id)
 
-    # Удаляем все сообщения
-    for msg_id in temp_ids:
-        try:
-            await message.bot.delete_message(message.chat.id, msg_id)
-        except:
-            pass
-
     await state.clear()
+
+    # УДАЛЯЕМ ВСЕ ВРЕМЕННЫЕ СООБЩЕНИЯ
+    if temp_ids:
+        _ = asyncio.create_task(
+            message_deleter(
+                bot=message.bot,
+                chat_id=message.chat.id,
+                message_ids=temp_ids
+            )
+        )
 
 
 @router.callback_query(F.data.startswith("view_hl:"))
@@ -1836,7 +1841,7 @@ async def handle_hl_filter_button(call: CallbackQuery, state: FSMContext):
     try:
         records = await get_diagnostics_by_filter(filter_type)
     except Exception as e:
-        logger.error(f"Ошибка при фильтрации диагностики: {e}")
+        api_logger.error(f"Ошибка при фильтрации кодов DTC: {e}")
         await call.answer("❌ Ошибка при загрузке данных.", show_alert=True)
         await state.clear()
         return
@@ -1870,7 +1875,7 @@ async def show_api_history(call: CallbackQuery):
     try:
         records = await get_api_dtc_history()
     except Exception as e:
-        logger.error(f"Ошибка при загрузке истории API: {e}")
+        api_logger.error(f"Ошибка при загрузке истории API: {e}")
         await call.answer("❌ Ошибка при загрузке истории.", show_alert=True)
         return
 
@@ -1887,7 +1892,7 @@ async def show_api_history(call: CallbackQuery):
                 f"🔧 <b>Возможные причины:</b>\n{causes_text}"
             )
             blocks.append(block)
-        response_text = "\n\n------------------------------\n\n".join(blocks)
+        response_text = "\n------------------------------\n".join(blocks)
         await call.message.answer(response_text, parse_mode="HTML", reply_markup=kb.staff_menu([4]))
 
     await call.answer()

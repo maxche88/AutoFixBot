@@ -25,7 +25,7 @@ from database.requests import (get_user_role, add_user, add_comment, add_grade, 
                                get_filter_appointments)
 from utils.time_bot import get_greeting
 from utils.utils_bot import message_deleter
-from config import config
+from config import Config
 from aiogram.exceptions import TelegramAPIError
 import logging
 import re
@@ -296,7 +296,7 @@ async def cmd_start(message: types.Message) -> None:
     await message.answer_photo(photo=titul_img)
 
     greeting = await get_greeting()
-    user_data = await get_user_dict(user_id, ["user_name"])
+    user_data = await get_user_dict(tg_id=user_id, fields=["user_name"])
     user_name = user_data["user_name"]
 
     # Формируем текст в зависимости от роли
@@ -519,7 +519,7 @@ async def quick_mess(call: CallbackQuery):
         return
 
     user_tg_id = call.from_user.id
-    user_data = await get_user_dict(user_tg_id, ["user_name"])
+    user_data = await get_user_dict(tg_id=user_tg_id, fields=["user_name"])
     user_name = user_data.get("user_name")
 
     # Получаем текст вопроса из словаря
@@ -645,7 +645,7 @@ async def start_booking(call: CallbackQuery):
         master_tg_id = appt["tg_id_master"]
 
         # Получаем данные мастера
-        master_data = await get_user_dict(master_tg_id, ["user_name", "contact"])
+        master_data = await get_user_dict(tg_id=master_tg_id, fields=["user_name", "contact"])
         master_name = master_data["user_name"] if master_data else "—"
         master_contact = master_data["contact"] if master_data else "—"
 
@@ -708,8 +708,8 @@ async def handle_service_choice(call: CallbackQuery, state: FSMContext):
 
     # Запрашиваем все нужные поля
     user_data = await get_user_dict(
-        user_id,
-        ["user_name", "rating", "brand_auto", "model_auto", "year_auto", "contact", "total_km", "vin_number", "gos_num"]
+        tg_id=user_id,
+        fields=["user_name", "rating", "brand_auto", "model_auto", "year_auto", "contact", "total_km", "vin_number", "gos_num"]
     )
 
     if not user_data:
@@ -951,7 +951,7 @@ async def handle_transfer_entry_request(call: CallbackQuery):
 
     # Получаем данные клиента
     client_tg_id = call.from_user.id
-    client_data = await get_user_dict(client_tg_id, ["user_name"])
+    client_data = await get_user_dict(tg_id=client_tg_id, fields=["user_name"])
     client_name = client_data["user_name"]
 
     # Формируем сообщение для мастера
@@ -987,7 +987,7 @@ async def initiate_support_message_to_all(call: CallbackQuery, state: FSMContext
     Начинает процесс отправки сообщения всем активным мастерам (can_mess=True).
     """
     user_id = call.from_user.id
-    user_data = await get_user_dict(user_id, ["user_name"])
+    user_data = await get_user_dict(tg_id=user_id, fields=["user_name"])
     if not user_data:
         await call.answer("❌ Ошибка: не удалось загрузить ваш профиль.", show_alert=True)
         return
@@ -1018,8 +1018,8 @@ async def save_and_send_support_message_to_all(message: Message, state: FSMConte
 
     user_tg_id = message.from_user.id
     user_data = await get_user_dict(
-        user_tg_id,
-        ["user_name", "rating", "brand_auto", "model_auto", "year_auto", "contact", "total_km"]
+        tg_id=user_tg_id,
+        fields=["user_name", "rating", "brand_auto", "model_auto", "year_auto", "contact", "total_km"]
     )
 
     if not user_data:
@@ -1071,7 +1071,6 @@ async def save_and_send_support_message_to_all(message: Message, state: FSMConte
             bot=bot,
             chat_id=message.chat.id,
             message_ids=message_ids_to_delete,
-            delay=config.TEMP_MESSAGE_LIFETIME_SEC
         )
     )
     await state.clear()
@@ -1084,7 +1083,7 @@ async def save_and_send_support_message_to_all(message: Message, state: FSMConte
 async def start_comment(call: CallbackQuery, state: FSMContext) -> None:
     """Начинает процесс оставления отзыва."""
     user_id = call.from_user.id
-    user_data = await get_user_dict(user_id, ["user_name"])
+    user_data = await get_user_dict(tg_id=user_id, fields=["user_name"])
     user_name = user_data["user_name"]
     await state.update_data(user_name=user_name, user_id=user_id)
 
@@ -1161,8 +1160,8 @@ async def save_comment_text(message: Message, state: FSMContext):
 async def show_user_data(call: CallbackQuery) -> None:
     user_tg_id = call.from_user.id
     user_data = await get_user_dict(
-        user_tg_id,
-        ["user_name", "brand_auto", "model_auto", "year_auto", "gos_num", "vin_number", "rating", "contact", "total_km"]
+        tg_id=user_tg_id,
+        fields=["user_name", "brand_auto", "model_auto", "year_auto", "gos_num", "vin_number", "rating", "contact", "total_km"]
     )
 
     text = (
@@ -1350,10 +1349,11 @@ async def show_contacts(call: CallbackQuery) -> None:
     """Отправляет контактную информацию и карту."""
     maps_img = FSInputFile("img/maps.jpg")
     caption = (
-        f"🏢 <b>СТО ЗАО Рассвет:</b> {config.OFFICE_ADDRESS}\n\n"
-        f"📞 <b>Телефон:</b> {config.SUPPORT_PHONE}\n\n"
-        f"📧 <b>Email:</b> {config.SUPPORT_EMAIL}"
+        f"🏢 <b>СТО ЗАО Рассвет:</b> {Config.OFFICE_ADDRESS}\n\n"
+        f"📞 <b>Телефон:</b> {Config.SUPPORT_PHONE}\n\n"
+        f"📧 <b>Email:</b> {Config.SUPPORT_EMAIL}"
     )
+
     await call.message.answer_photo(photo=maps_img, caption=caption, reply_markup=kb.location_menu())
 
 
@@ -1375,7 +1375,7 @@ async def handle_send_repair_request(call: CallbackQuery):
         return
 
     # Проверяем, что клиент существует
-    user_data = await get_user_dict(user_tg_id)
+    user_data = await get_user_dict(tg_id=user_tg_id)
 
     # Отправляем мастеру сообщение с кнопкой создания заказа
     await bot.send_message(
@@ -1437,7 +1437,7 @@ async def process_client_reply(message: Message, state: FSMContext):
 
     # Получаем данные клиента
     user_tg_id = message.from_user.id
-    user_data = await get_user_dict(user_tg_id, ["user_name", "brand_auto", "model_auto"])
+    user_data = await get_user_dict(tg_id=user_tg_id, fields=["user_name", "brand_auto", "model_auto"])
 
     # Отправляем ответ мастеру
     try:

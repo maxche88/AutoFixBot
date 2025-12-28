@@ -2,14 +2,12 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from typing import List, Dict
 from datetime import date, datetime
-from config import config
+from config import Config
 
 
 # ==============================
-# АВТОРИЗАЦИЯ
+# АВТОРИЗАЦИЯ РЕГИСТРАЦИЯ
 # ==============================
-
-
 def auth_menu():
     kb_list = [
         [InlineKeyboardButton(text='🔆 Регистрация 🔆', callback_data='registration')]
@@ -141,7 +139,7 @@ def location_menu():
     kb_list = [
         [InlineKeyboardButton(
             text='Показать на Яндекс Карте',
-            url=config.SERVICE_LOCATION_URL
+            url=Config.SERVICE_LOCATION_URL
         )],
         [InlineKeyboardButton(
             text='🔺 Скрыть 🔺',
