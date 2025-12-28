@@ -185,12 +185,60 @@ def rating_keyboard():
 def admin_menu():
     kb_list_1 = [
         [InlineKeyboardButton(text="🔹 АДМИН-ПАНЕЛЬ 🔹", callback_data='admin_panel')],
-        [InlineKeyboardButton(text="🔹 УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ 🔹", callback_data='manage_users')],
-        [InlineKeyboardButton(text="🔹 УПРАВЛЕНИЕ МАСТЕРАМИ 🔹", callback_data='manage_users')],
         [InlineKeyboardButton(text="🔹 СТАТИСТИКА 🔹", callback_data='admin_stats')],
         [InlineKeyboardButton(text="🔹 РАССЫЛКА 🔹", callback_data='broadcast')]
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb_list_1)
+
+
+def admin_action_menu(index: list, order_id: int = None, tg_id: int = None) -> InlineKeyboardMarkup:
+    buttons_dict = {
+        1: InlineKeyboardButton(text="🔹 УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ 🔹", callback_data="manage_users"),
+        2: InlineKeyboardButton(text="🔹 УПРАВЛЕНИЕ МАСТЕРАМИ 🔹", callback_data='manage_masters'),
+        3: InlineKeyboardButton(text="🔺 Назад 🔺", callback_data='admin_back_main_menu'),
+        4: InlineKeyboardButton(text="🔺 Назад 🔺", callback_data='cancel'),
+        5: InlineKeyboardButton(text="🔺 Назад 🔺", callback_data='admin_panel'),
+        # УПРАВЛЕНИЕ МАСТЕРАМИ
+        6: InlineKeyboardButton(text="✏️ Изменить должность", callback_data=f"master_action:edit_status:{tg_id}"),
+        7: InlineKeyboardButton(text="⭐️ Изменить рейтинг", callback_data=f"master_action:edit_rating:{tg_id}"),
+        8: InlineKeyboardButton(text="🗑️ Удалить мастера", callback_data=f"master_action:delete:{tg_id}"),
+        9: InlineKeyboardButton(text="📅 Посмотреть записи", callback_data=f"master_app:{tg_id}"),
+        10: InlineKeyboardButton(text="✅ Активные заказы", callback_data=f"master_order_active:{tg_id}"),
+        13: InlineKeyboardButton(text="🚫 Закрытые заказы", callback_data=f"master_order_close:{tg_id}"),
+        11: InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="manage_masters"),
+        # ПОДТВЕРЖДЕНИЕ УДАЛЕНИЯ МАСТЕРА
+        12: InlineKeyboardButton(text="❌ Да, удалить", callback_data=f"confirm_delete_master:{tg_id}"),
+    }
+
+    inline_buttons = [[buttons_dict[idx]] for idx in index if idx in buttons_dict]
+    return InlineKeyboardMarkup(inline_keyboard=inline_buttons)
+
+
+def create_masters_management_keyboard(masters: List[Dict[str, str | int]]) -> InlineKeyboardMarkup:
+    """
+    Генерирует клавиатуру для управления мастерами.
+    Каждая кнопка: "Имя (Должность)", callback_data = manage_master:<tg_id>
+    В конце — кнопка "Назад" в админ-панель.
+
+    :param masters: Список словарей с ключами 'user_name', 'status', 'tg_id'
+    :return: InlineKeyboardMarkup
+    """
+    buttons = []
+    for master in masters:
+        status = master.get("status")
+        display_name = f"{master['user_name']} ({status})"
+        buttons.append([
+            InlineKeyboardButton(
+                text=display_name,
+                callback_data=f"manage_master:{master['tg_id']}"
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="admin_panel")
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 # ==============================

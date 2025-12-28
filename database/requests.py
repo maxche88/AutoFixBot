@@ -69,15 +69,27 @@ async def get_user_role(session, user_id: int) -> Optional[str]:
 @connection
 async def get_all_masters(session, exclude_tg_id: int | None = None) -> list[dict]:
     """
-    Возвращает список мастеров: [{'tg_id': ..., 'user_name': ..., 'contact': ...}]
+    Возвращает список мастеров: [{'tg_id': ..., 'user_name': ..., 'contact': ..., 'status': ...}]
     Исключает мастера с указанным tg_id (если задан).
     """
-    query = select(User.tg_id, User.user_name, User.contact).where(User.role == "master")
+    query = select(
+        User.tg_id,
+        User.user_name,
+        User.contact,
+        User.status
+    ).where(User.role == "master")
+
     if exclude_tg_id is not None:
         query = query.where(User.tg_id != exclude_tg_id)
+
     result = await session.execute(query)
     return [
-        {"tg_id": row.tg_id, "user_name": row.user_name, "contact": row.contact}
+        {
+            "tg_id": row.tg_id,
+            "user_name": row.user_name,
+            "contact": row.contact,
+            "status": row.status
+        }
         for row in result.fetchall()
     ]
 
@@ -214,6 +226,43 @@ async def add_grade(session, user_id: int, rate: int) -> None:
     stmt = update(User).where(User.tg_id == user_id).values(rating=User.rating + rate)
     await session.execute(stmt)
     await session.commit()
+
+
+@connection
+async def delete_user(session, tg_id: int) -> bool:
+    """
+    Безопасно удаляет пользователя по Telegram ID.
+    Удаление возможно только если:
+      - нет активных заказов (статус != 'close'),
+      - нет записей на приём,
+
+    :param session: Асинхронная сессия SQLAlchemy (передаётся декоратором).
+    :param tg_id: Telegram ID пользователя.
+    :return: True, если пользователь удалён. False — если есть зависимости или пользователь не найден.
+    """
+    # Проверка активных заказов (как клиент, так и мастер)
+    active_orders = await session.scalar(
+        select(Orders.id).where(
+            (Orders.tg_id_user == tg_id) | (Orders.tg_id_master == tg_id),
+            Orders.repair_status != "close"
+        )
+    )
+    if active_orders:
+        return False
+
+    # Проверка записей на приём
+    appointments = await session.scalar(
+        select(Appointment.id).where(
+            (Appointment.tg_id_user == tg_id) | (Appointment.tg_id_master == tg_id)
+        )
+    )
+    if appointments:
+        return False
+
+    # Удаляем пользователя
+    result = await session.execute(delete(User).where(User.tg_id == tg_id))
+    await session.commit()
+    return result.rowcount > 0
 
 
 # ==============================

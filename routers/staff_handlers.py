@@ -5,8 +5,9 @@ from aiogram.fsm.state import State, StatesGroup
 from database.requests import (get_user_dict, get_available_hours, create_appointment, get_active_order_id, add_order,
                                get_orders_by_user, update_order, delete_order, get_all_masters, get_filter_appointments,
                                get_appointment, get_appointment_by_users, delete_appointment, save_api_dtc_record,
-                               update_user, save_manual_diagnostic_record, get_diagnostics_by_filter,
+                               update_user, save_manual_diagnostic_record, get_diagnostics_by_filter, delete_user,
                                get_api_dtc_history)
+from utils.profile_render import render_master_profile
 from bot import bot
 import asyncio
 from aiogram.exceptions import TelegramAPIError
@@ -79,11 +80,326 @@ class EditProfile(StatesGroup):
     edit_profile_master = State()
 
 
+class MasterManagement(StatesGroup):
+    edit_status = State()  # редактирование должности мастера
+    edit_rating = State()  # редактирование рейтинга мастера
+    confirm_delete = State()
+
+
 REPAIR_STATUS_DISPLAY = {
     "in_work": "В работе",
     "wait": "Ожидание",
     "close": "Закрыт"
 }
+
+
+@router.callback_query(F.data == "admin_panel")
+async def handle_admin_panel(call: CallbackQuery):
+    """Открывает админ-панель с выбором раздела."""
+    text = (
+        "📁 <b>АДМИН ПАНЕЛЬ</b>\n\n"
+        "Здесь вы можете управлять пользователями и мастерами, "
+        "настраивать права доступа, а также контролировать все "
+        "записи и заказы в системе."
+    )
+
+    await call.message.edit_text(
+        text,
+        reply_markup=kb.admin_action_menu([1, 2, 3]),
+        parse_mode="HTML"
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "manage_masters")
+async def handle_manage_masters(call: CallbackQuery):
+    """Открывает список мастеров для управления."""
+    masters = await get_all_masters()  # ← возвращает [{'tg_id', 'user_name', 'status'}, ...]
+
+    if not masters:
+        await call.answer("В системе пока нет ни одного мастера.", show_alert=True)
+        return
+
+    keyboard = kb.create_masters_management_keyboard(masters)
+
+    await call.message.edit_text(
+        "📁 <b>УПРАВЛЕНИЕ МАСТЕРАМИ</b>\n\n"
+        "Выберите мастера для просмотра информации о нём и его работе. Таже вы можете отредактировать необходимые "
+        "данные",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("manage_master:"))
+async def handle_manage_single_master(call: CallbackQuery):
+    try:
+        tg_id = int(call.data.split(":")[1])
+    except (ValueError, IndexError):
+        await call.answer("Некорректный ID мастера", show_alert=True)
+        return
+
+    text, keyboard = await render_master_profile(tg_id)
+    await call.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("master_action:"))
+async def handle_master_action(call: CallbackQuery, state: FSMContext):
+    data_parts = call.data.split(":")
+    if len(data_parts) != 3:
+        await call.answer("Некорректный формат действия", show_alert=True)
+        return
+
+    try:
+        tg_id = int(data_parts[2])
+        action = data_parts[1]
+    except (ValueError, IndexError):
+        await call.answer("Ошибка данных действия", show_alert=True)
+        return
+
+    user_data = await get_user_dict(tg_id=tg_id, fields=["user_name", "role"])
+    if not user_data or user_data.get("role") != "master":
+        await call.answer("Мастер не найден", show_alert=True)
+        return
+
+    master_name = user_data["user_name"]
+    chat_id = call.message.chat.id
+    profile_msg_id = call.message.message_id  # ID сообщения с профилем
+    temp_ids = []  # только новые временные сообщения
+
+    if action == "edit_status":
+        msg = await call.message.answer(
+            f"✏️ Введите новую <b>должность</b> для мастера <b>{master_name}</b>:",
+            parse_mode="HTML"
+        )
+        temp_ids.append(msg.message_id)
+        await state.set_state(MasterManagement.edit_status)
+        await state.update_data(
+            target_tg_id=tg_id,
+            chat_id=chat_id,
+            profile_msg_id=profile_msg_id,  # сохраняем для последующего обновления
+            temp_message_ids=temp_ids
+        )
+
+    elif action == "edit_rating":
+        msg = await call.message.answer(
+            f"✏️ Введите новый <b>рейтинг</b> для мастера <b>{master_name}</b> (целое число от 0 до 1000):",
+            parse_mode="HTML"
+        )
+        temp_ids.append(msg.message_id)
+        await state.set_state(MasterManagement.edit_rating)
+        await state.update_data(
+            target_tg_id=tg_id,
+            chat_id=chat_id,
+            profile_msg_id=profile_msg_id,
+            temp_message_ids=temp_ids
+        )
+
+    elif action == "delete":
+        confirm_msg = await call.message.answer(
+            f"⚠️ Вы уверены, что хотите <b>удалить мастера</b> <b>{master_name}</b>?\n"
+            "Это действие нельзя отменить.",
+            reply_markup=kb.admin_action_menu([12, 4], tg_id=tg_id),
+            parse_mode="HTML"
+        )
+        temp_ids.append(confirm_msg.message_id)
+        await state.update_data(
+            target_tg_id=tg_id,
+            chat_id=chat_id,
+            profile_msg_id=profile_msg_id,
+            temp_message_ids=temp_ids
+        )
+
+    else:
+        await call.answer("Неизвестное действие", show_alert=True)
+
+    await call.answer()
+
+
+@router.message(MasterManagement.edit_status)
+async def process_edit_status(message: Message, state: FSMContext):
+    new_status = message.text.strip()
+    if not new_status:
+        msg = await message.answer("❌ Должность не может быть пустой. Попробуйте снова:")
+        data = await state.get_data()
+        data["temp_message_ids"].append(msg.message_id)
+        await state.set_data(data)
+        return
+
+    data = await state.get_data()
+    tg_id = data["target_tg_id"]
+    chat_id = data["chat_id"]
+    profile_msg_id = data["profile_msg_id"]
+    temp_ids = data.get("temp_message_ids", [])
+    temp_ids.append(message.message_id)
+
+    success = await update_user(tg_id=tg_id, column="status", value=new_status)
+
+    if success:
+        confirm_msg = await message.answer("✅ Должность успешно обновлена!")
+        temp_ids.append(confirm_msg.message_id)
+
+        # Обновляем сообщение с профилем
+        text, keyboard = await render_master_profile(tg_id)
+        try:
+            await message.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=profile_msg_id,
+                text=text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass  # если сообщение уже удалено
+
+    else:
+        error_msg = await message.answer("❌ Не удалось обновить должность.")
+        temp_ids.append(error_msg.message_id)
+
+    if temp_ids:
+            _ = asyncio.create_task(
+                message_deleter(
+                    bot=message.bot,
+                    chat_id=chat_id,
+                    message_ids=temp_ids
+                )
+        )
+
+    await state.clear()
+
+
+@router.message(MasterManagement.edit_rating)
+async def process_edit_rating(message: Message, state: FSMContext):
+    try:
+        rating = int(message.text.strip())
+        if rating < 0 or rating > 1000:
+            raise ValueError
+    except ValueError:
+        msg = await message.answer("❌ Введите целое число от 0 до 1000:")
+        data = await state.get_data()
+        data["temp_message_ids"].append(msg.message_id)
+        await state.set_data(data)
+        return
+
+    data = await state.get_data()
+    tg_id = data["target_tg_id"]
+    chat_id = data["chat_id"]
+    profile_msg_id = data["profile_msg_id"]
+    temp_ids = data.get("temp_message_ids", [])
+    temp_ids.append(message.message_id)
+
+    success = await update_user(tg_id=tg_id, column="rating", value=rating)
+
+    if success:
+        confirm_msg = await message.answer("✅ Рейтинг успешно обновлён!")
+        temp_ids.append(confirm_msg.message_id)
+
+        # Обновляем сообщение с профилем
+        text, keyboard = await render_master_profile(tg_id)
+        try:
+            await message.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=profile_msg_id,
+                text=text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+    else:
+        error_msg = await message.answer("❌ Не удалось обновить рейтинг.")
+        temp_ids.append(error_msg.message_id)
+
+    if temp_ids:
+        _ = asyncio.create_task(
+                message_deleter(
+                    bot=message.bot,
+                    chat_id=chat_id,
+                    message_ids=temp_ids
+                )
+        )
+
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("confirm_delete_master:"))
+async def confirm_delete_master(call: CallbackQuery, state: FSMContext):
+    try:
+        tg_id = int(call.data.split(":")[1])
+    except (ValueError, IndexError):
+        await call.answer("Ошибка ID", show_alert=True)
+        return
+
+    success = await delete_user(tg_id)
+
+    data = await state.get_data()
+    profile_msg_id = data.get("profile_msg_id")  # ID исходного сообщения с профилем
+    chat_id = call.message.chat.id
+
+    # Удаляем ТОЛЬКО сообщение с подтверждением (call.message) — оно больше не нужно
+    try:
+        await call.bot.delete_message(chat_id=chat_id, message_id=call.message.message_id)
+    except:
+        pass  # если уже удалено — игнорируем
+
+    # Алерт с результатом
+    if success:
+        alert_text = "✅ Мастер успешно удалён."
+    else:
+        alert_text = "❌ Невозможно удалить."
+
+    await call.answer(alert_text, show_alert=True)
+
+    # Обновляем список мастеров и редактируем исходное сообщение (профиль → список)
+    masters = await get_all_masters()
+
+    if profile_msg_id:
+        if not masters:
+            text = (
+                "📁 <b>УПРАВЛЕНИЕ МАСТЕРАМИ</b>\n\n"
+                "Вы удалили последнего мастера. Теперь будете работать сами 😅\n"
+                "Найдите новых рабочих или смените свою роль на мастера."
+            )
+            keyboard = kb.admin_action_menu([5])  # admin_panel
+        else:
+            text = (
+                "📁 <b>УПРАВЛЕНИЕ МАСТЕРАМИ</b>\n\n"
+                "Выберите мастера для просмотра информации о нём и его работе. "
+                "Также вы можете отредактировать необходимые данные."
+            )
+            keyboard = kb.create_masters_management_keyboard(masters)
+
+        try:
+            await call.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=profile_msg_id,
+                text=text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        except TelegramAPIError:
+            pass
+
+    await state.clear()
+
+
+@router.callback_query(F.data == "admin_back_main_menu")
+async def back_to_main_menu(call: CallbackQuery):
+    """Возвращает мастера в основное меню."""
+    text = (
+        "📁 <b>ПАНЕЛЬ АДМИНИСТРАТОРА</b>\n\n"
+        "Управляйте пользователями, мастерами, записями и настройками сервиса.\n\n"
+        "Выберите действие ниже 👇"
+    )
+
+    await call.message.edit_text(
+        text=text,
+        reply_markup=kb.admin_menu()
+    )
+    await call.answer()
 
 
 # ===========================

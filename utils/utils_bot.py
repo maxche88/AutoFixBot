@@ -24,9 +24,6 @@ async def message_deleter(
     :param delay: Задержка в секундах. Если не указано — берётся из config.TEMP_MESSAGE_LIFETIME_SEC
     """
 
-    if not message_ids:
-        return
-
     actual_delay = delay if delay is not None else Config.TEMP_MESSAGE_LIFETIME_SEC
     await asyncio.sleep(actual_delay)
 
