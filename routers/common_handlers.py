@@ -91,6 +91,10 @@ class QuickQuestionToMaster(StatesGroup):
     waiting_for_custom_text = State()
 
 
+class Test(StatesGroup):
+    in_tg_id = State()
+
+
 # ==============================
 # РЕГИСТРАЦИЯ registration
 # ==============================
@@ -239,7 +243,7 @@ async def confirm_registration(call: CallbackQuery, state: FSMContext) -> None:
         reply_markup=kb.user_main_menu()
     )
 
-    logger.info(f"Пользователь {user_id} успешно завершил авторизацию.")
+    logger.info(f"Пользователь {user_id} успешно завершил регистрацию.")
     await add_user(new_user)
     await call.message.delete()
     await state.clear()
@@ -1166,6 +1170,7 @@ async def show_user_data(call: CallbackQuery) -> None:
 
     text = (
         "Ваши регистрационные данные и информация об авто:\n\n"
+        f"📌 UID: {user_tg_id}\n"
         f"👤 Имя: {user_data['user_name']}\n"
         f"📞 Контактный номер: {user_data['contact']}\n"
         f"⭐ Рейтинг: {user_data['rating']}\n"
@@ -1192,14 +1197,14 @@ async def show_user_data(call: CallbackQuery) -> None:
 
 
 # ==============================
-# РЕДАКТИРОВАНИЕ ПРОФИЛЯ
+# МАСТЕР. РЕДАКТИРОВАНИЕ ПРОФИЛЯ
 # ==============================
 @router.callback_query(F.data == "edit_menu")
 async def edit_menu(call: CallbackQuery, state: FSMContext) -> None:
     """Открывает меню редактирования данных."""
     prompt_msg = await call.message.answer(
         "Выберите данные для изменения или дополнения:",
-        reply_markup=kb.common_menu([13, 14, 7, 15, 18, 16, 17, 6])
+        reply_markup=kb.common_menu([17, 13, 14, 7, 15, 18, 16, 6])
     )
     # Новый список временных сообщений
     await state.update_data(edit_message_ids=[prompt_msg.message_id])
@@ -1219,15 +1224,13 @@ async def start_edit_field(call: CallbackQuery, state: FSMContext) -> None:
         "contact": "Контактный номер"
     }
 
-    # Удаляем клавиатуру с выбором полей
-    await call.message.edit_reply_markup(reply_markup=None)
-
     field_key = call.data.split(":")[1]
     await state.update_data(data_type=field_key)
 
     # Отправляем запрос на ввод
-    input_msg = await call.message.answer(
-        f"Введите {field_map[field_key]} (до 20 символов):"
+    input_msg = await call.message.edit_text(
+        f"Введите {field_map[field_key]} (до 20 символов):",
+        reply_markup=kb.common_menu([6])
     )
 
     # Добавляем новое сообщение в список
@@ -1448,7 +1451,8 @@ async def process_client_reply(message: Message, state: FSMContext):
                 f"👤 Имя: {user_data['user_name']}\n"
                 f"📱 Телеграм: {user_tg_id}\n"
                 f"💬 {message.text}"
-            )
+            ),
+            reply_markup=kb.common_menu([4])
         )
 
     except TelegramAPIError as e:
@@ -1543,3 +1547,5 @@ async def cancel_booking(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await call.message.delete()
     await call.answer()
+
+

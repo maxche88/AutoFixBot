@@ -506,7 +506,7 @@ async def master_edit_menu(call: CallbackQuery, state: FSMContext) -> None:
         menu_indx = [1, 2, 3, 4]   # "Включить сообщения"
 
     prompt_msg = await call.message.answer(
-        "Для изменения выберите один из пунктов и следуйте дальнейшим подсказкам:",
+        "Выберите данные для изменения или дополнения:",
         reply_markup=kb.staff_menu(menu_indx)
     )
     await state.update_data(edit_message_ids=[prompt_msg.message_id])
@@ -551,13 +551,11 @@ async def start_edit_field(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer("❌ Неизвестное поле.", show_alert=True)
         return
 
-    # Убираем клавиатуру
-    await call.message.edit_reply_markup(reply_markup=None)
-
     await state.update_data(data_type=action)
 
-    input_msg = await call.message.answer(
-        f"Введите {field_map[action]} (до 20 символов):"
+    input_msg = await call.message.edit_text(
+        f"Введите {field_map[action]} (до 20 символов):",
+        reply_markup=kb.staff_menu([4])
     )
 
     data = await state.get_data()
@@ -916,7 +914,7 @@ async def send_custom_message_to_client(message: Message, state: FSMContext):
     master_tg_id = data["master_tg_id"]
 
     user_data = await get_user_dict(tg_id=master_tg_id, fields=["user_name"])
-    master_name = user_data["user_name"] if user_data else "—"
+    master_name = user_data["user_name"]
 
     # Отправляем сообщение клиенту
     await bot.send_message(
@@ -1327,9 +1325,8 @@ async def handle_await_action(call: CallbackQuery):
     user_id = int(parts[1])
 
     response_text = "⌚️ В данный момент занят. Отвечу, как только освобожусь!"
-    await bot.send_message(chat_id=user_id, text=response_text)
-    await call.message.answer("✅ Ответ «Ожидание» отправлен пользователю.")
-    await call.answer()
+    await bot.send_message(chat_id=user_id, text=response_text, reply_markup=kb.common_menu([4]))
+    await call.answer("✅ Ответ «Ожидание» отправлен пользователю.", show_alert=True)
 
 
 # === ОТКАЗ ===
@@ -1338,9 +1335,8 @@ async def handle_refuse_action(call: CallbackQuery):
     parts = call.data.split(":", 1)
     user_id = int(parts[1])
     response_text = f"😔 Извините, но к сожалению не сможем помочь с этой проблемой."
-    await bot.send_message(chat_id=user_id, text=response_text)
-    await call.message.answer("✅ Ответ «Отказ» отправлен пользователю.")
-    await call.answer()
+    await bot.send_message(chat_id=user_id, text=response_text, reply_markup=kb.common_menu([4]))
+    await call.answer("✅ Ответ «Отказ» отправлен пользователю.", show_alert=True)
 
 
 # === ЗВОНИТЕ ===
@@ -1351,16 +1347,15 @@ async def handle_call_action(call: CallbackQuery):
     master_tg_id = call.from_user.id
 
     user_data = await get_user_dict(tg_id=master_tg_id, fields=["user_name", "contact"])
-    master_name = user_data["user_name"] if user_data else "—"
-    master_contact = user_data["contact"] if user_data else "—"
+    master_name = user_data["user_name"]
+    master_contact = user_data["contact"]
 
     response_text = (f'🔔 Звоните по номеру!\n'
                      f'👤 Имя: {master_name}\n'
                      f'📞 Сот. тел.: <a href="tel:{master_contact}">{master_contact}</a>')
 
-    await bot.send_message(chat_id=user_id, text=response_text, parse_mode="HTML")
-    await call.message.answer("✅ Ответ «Звоните» отправлен пользователю.")
-    await call.answer()
+    await bot.send_message(chat_id=user_id, text=response_text, parse_mode="HTML", reply_markup=kb.common_menu([4]))
+    await call.answer("✅ Ответ «Звоните» отправлен пользователю.", show_alert=True)
 
 
 # === УТОЧНИТЬ УДОБНОЕ ВРЕМЯ ===
@@ -1386,8 +1381,7 @@ async def handle_check_time_action(call: CallbackQuery):
     )
 
     # Подтверждаем мастеру
-    await call.message.answer("✅ Уточняющий вопрос по времени отправлен клиенту.")
-    await call.answer()
+    await call.answer("✅ Уточняющий вопрос по времени отправлен клиенту.", show_alert=True)
 
 
 # === НАЗНАЧИТЬ ВРЕМЯ — вход в FSM ===
