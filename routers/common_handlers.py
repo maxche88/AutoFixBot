@@ -297,6 +297,10 @@ async def cmd_start(message: types.Message) -> None:
 
     logger.info(f"Пользователь {user_id} ({name}) вошёл в систему с ролью: {role}")
 
+    # Если пользователь заблокирован то бот молчит
+    if role == "blocked":
+        return
+
     await message.answer_photo(photo=titul_img)
 
     greeting = await get_greeting()
@@ -640,6 +644,7 @@ async def process_grade(call: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "appointment")
 async def start_booking(call: CallbackQuery):
     user_id = call.from_user.id
+
 
     # Проверяем, есть ли у пользователя активная запись
     appointments = await get_filter_appointments(tg_id_user=user_id)
@@ -1165,12 +1170,12 @@ async def show_user_data(call: CallbackQuery) -> None:
     user_tg_id = call.from_user.id
     user_data = await get_user_dict(
         tg_id=user_tg_id,
-        fields=["user_name", "brand_auto", "model_auto", "year_auto", "gos_num", "vin_number", "rating", "contact", "total_km"]
+        fields=["id", "user_name", "brand_auto", "model_auto", "year_auto", "gos_num", "vin_number", "rating", "contact", "total_km"]
     )
 
     text = (
         "Ваши регистрационные данные и информация об авто:\n\n"
-        f"📌 UID: {user_tg_id}\n"
+        f"📌 UID: {user_data['id']}\n"
         f"👤 Имя: {user_data['user_name']}\n"
         f"📞 Контактный номер: {user_data['contact']}\n"
         f"⭐ Рейтинг: {user_data['rating']}\n"

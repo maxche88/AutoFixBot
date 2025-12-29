@@ -191,6 +191,15 @@ def admin_menu():
     return InlineKeyboardMarkup(inline_keyboard=kb_list_1)
 
 
+def admin_user_manage(uid: int) -> InlineKeyboardMarkup:
+    kb_list_1 = [
+        [InlineKeyboardButton(text="🔹 НАЗНАЧИТЬ МАСТЕРОМ", callback_data=f"admin_user_action:promote:{uid}")],
+        [InlineKeyboardButton(text="🔹 ЗАБЛОКИРОВАТЬ", callback_data=f"admin_user_action:block:{uid}")],
+        [InlineKeyboardButton(text="🔺 Назад", callback_data="admin_panel")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=kb_list_1)
+
+
 def admin_action_menu(index: list, order_id: int = None, tg_id: int = None) -> InlineKeyboardMarkup:
     buttons_dict = {
         1: InlineKeyboardButton(text="🔹 УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ 🔹", callback_data="manage_users"),

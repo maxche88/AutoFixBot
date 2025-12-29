@@ -67,6 +67,27 @@ async def get_user_role(session, user_id: int) -> Optional[str]:
 
 
 @connection
+async def update_user_by_id(session, uid: int, **kwargs) -> bool:
+    """
+    Универсально обновляет поля пользователя по его внутреннему ID (users.id).
+    Примеры:
+        await update_user_by_id(123, role="master")
+        await update_user_by_id(123, role="blocked", status="Заблокирован")
+    Возвращает True при успехе, False — если пользователь не найден.
+    """
+    user = await session.scalar(select(User).where(User.id == uid))
+    if not user:
+        return False
+    for key, value in kwargs.items():
+        if hasattr(user, key):
+            setattr(user, key, value)
+        else:
+            db_logger.warning(f"Попытка обновить несуществующее поле '{key}' у пользователя {uid}")
+    await session.commit()
+    return True
+
+
+@connection
 async def get_all_masters(session, exclude_tg_id: int | None = None) -> list[dict]:
     """
     Возвращает список мастеров: [{'tg_id': ..., 'user_name': ..., 'contact': ..., 'status': ...}]
@@ -92,6 +113,35 @@ async def get_all_masters(session, exclude_tg_id: int | None = None) -> list[dic
         }
         for row in result.fetchall()
     ]
+
+
+@connection
+async def get_user_dict_by_id(session, uid: int) -> Optional[Dict[str, Any]]:
+    """
+    Возвращает словарь с данными пользователя по его внутреннему ID (users.id).
+    Если пользователь не найден — возвращает None.
+    """
+    result = await session.execute(select(User).where(User.id == uid))
+    user = result.scalar_one_or_none()
+    if user is None:
+        return None
+    return {
+        "id": user.id,
+        "tg_id": user.tg_id,
+        "user_name": user.user_name,
+        "status": user.status,
+        "rating": user.rating,
+        "contact": user.contact,
+        "brand_auto": user.brand_auto,
+        "model_auto": user.model_auto,
+        "year_auto": user.year_auto,
+        "gos_num": user.gos_num,
+        "vin_number": user.vin_number,
+        "total_km": user.total_km,
+        "role": user.role,
+        "can_messages": user.can_messages,
+        "date": user.date,
+    }
 
 
 @connection

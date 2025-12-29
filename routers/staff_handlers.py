@@ -6,7 +6,7 @@ from database.requests import (get_user_dict, get_available_hours, create_appoin
                                get_orders_by_user, update_order, delete_order, get_all_masters, get_filter_appointments,
                                get_appointment, get_appointment_by_users, delete_appointment, save_api_dtc_record,
                                update_user, save_manual_diagnostic_record, get_diagnostics_by_filter, delete_user,
-                               get_api_dtc_history)
+                               get_api_dtc_history, get_user_dict_by_id, update_user_by_id)
 from utils.profile_render import render_master_profile
 from bot import bot
 import asyncio
@@ -86,6 +86,11 @@ class MasterManagement(StatesGroup):
     confirm_delete = State()
 
 
+class UserManagement(StatesGroup):
+    entering_uid = State()
+    viewing_user = State()
+
+
 REPAIR_STATUS_DISPLAY = {
     "in_work": "В работе",
     "wait": "Ожидание",
@@ -114,7 +119,7 @@ async def handle_admin_panel(call: CallbackQuery):
 @router.callback_query(F.data == "manage_masters")
 async def handle_manage_masters(call: CallbackQuery):
     """Открывает список мастеров для управления."""
-    masters = await get_all_masters()  # ← возвращает [{'tg_id', 'user_name', 'status'}, ...]
+    masters = await get_all_masters()  # возвращает [{'tg_id', 'user_name', 'status'}, ...]
 
     if not masters:
         await call.answer("В системе пока нет ни одного мастера.", show_alert=True)
@@ -384,6 +389,143 @@ async def confirm_delete_master(call: CallbackQuery, state: FSMContext):
             pass
 
     await state.clear()
+
+
+# АДМИН. УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ
+@router.callback_query(F.data == "manage_users")
+async def handle_manage_users(call: CallbackQuery, state: FSMContext):
+    """Запрашивает UID пользователя для управления."""
+
+    prompt_msg = await call.message.answer(
+        "📁 <b>УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ</b>\n\n"
+        "📝 Введите <b>UID</b> пользователя (целое число из его профиля):",
+        parse_mode="HTML"
+    )
+    await state.update_data(prompt_message_id=prompt_msg.message_id)
+    await state.set_state(UserManagement.entering_uid)
+    await call.answer()
+
+
+@router.message(UserManagement.entering_uid)
+async def process_user_uid_input(message: Message, state: FSMContext):
+    user_input = message.text.strip()
+
+    # Удаляем сообщение пользователя
+    try:
+        await message.delete()
+    except TelegramAPIError:
+        pass
+
+    # Получаем ID сообщения с запросом
+    data = await state.get_data()
+    prompt_msg_id = data.get("prompt_message_id")
+
+    # Валидация UID
+    try:
+        uid = int(user_input)
+        if uid <= 0:
+            raise ValueError
+    except ValueError:
+        # Удаляем старый запрос
+        if prompt_msg_id:
+            try:
+                await message.bot.delete_message(message.chat.id, prompt_msg_id)
+            except TelegramAPIError:
+                pass
+        # Отправляем новый запрос
+        new_prompt = await message.answer("❌ Некорректный UID. Введите положительное целое число:")
+        await state.update_data(prompt_message_id=new_prompt.message_id)
+        return
+
+    # Ищем пользователя по внутреннему ID (не tg_id!)
+    user_data = await get_user_dict_by_id(uid)
+    if not user_data:
+        if prompt_msg_id:
+            try:
+                await message.bot.delete_message(message.chat.id, prompt_msg_id)
+            except TelegramAPIError:
+                pass
+        error_msg = await message.answer("❌ Пользователь с таким UID не найден.")
+        await asyncio.sleep(2)
+        try:
+            await error_msg.delete()
+        except TelegramAPIError:
+            pass
+        await state.clear()
+        return
+
+    # Формируем карточку пользователя
+    text = (
+        f"📌 UID: {user_data['id']}\n"
+        f"🆔 Telegram ID: <code>{user_data['tg_id']}</code>\n"
+        f"👤 Имя: {user_data['user_name']}\n"
+        f"🔸 Статус: {user_data['status']}\n"
+        f"📞 Сот.тел: {user_data['contact']}\n"
+        f"⭐ Рейтинг: {user_data['rating']}\n"
+        f"📍 Роль: {user_data['role']}\n"
+        f"🚗 Авто: {user_data['brand_auto']} {user_data['model_auto']} ({user_data['year_auto']})\n"
+        f"🔢 Гос. номер: {user_data['gos_num']}\n"
+        f"🆔 VIN: {user_data['vin_number']}\n"
+        f"📅 Дата регистрации: {user_data['date'].strftime('%d.%m.%Y %H:%M') if user_data['date'] else '—'}"
+    )
+
+    await message.answer(text, reply_markup=kb.admin_user_manage(uid), parse_mode="HTML")
+
+    # Очищаем состояние и удаляем запрос
+    if prompt_msg_id:
+        try:
+            await message.bot.delete_message(message.chat.id, prompt_msg_id)
+        except TelegramAPIError:
+            pass
+    await state.clear()
+
+
+# АДМИН. НАЗНАЧИТЬ МАСТЕРОМ ИЛИ ЗАБЛОКИРОВАТЬ
+@router.callback_query(F.data.startswith("admin_user_action:"))
+async def handle_admin_user_action(call: CallbackQuery):
+    """
+    Обрабатывает действия администратора над пользователем:
+    - promote → назначить мастером
+    - block → заблокировать (меняет роль на 'blocked')
+    """
+    parts = call.data.split(":", 2)
+    if len(parts) != 3:
+        await call.answer("❌ Неверный формат действия", show_alert=True)
+        return
+
+    action, uid_str = parts[1], parts[2]
+    try:
+        uid = int(uid_str)
+    except ValueError:
+        await call.answer("❌ Некорректный UID", show_alert=True)
+        return
+
+    success = False
+    if action == "promote":
+        # Назначаем мастером
+        success = await update_user_by_id(
+            uid,
+            role="master",
+            status="Рабочий",
+            brand_auto="-",
+            can_messages=True
+        )
+        message = "✅ Пользователь назначен мастером!" if success else "❌ Не удалось назначить мастера."
+    elif action == "block":
+        # Блокируем
+        success = await update_user_by_id(uid, role="blocked", status="Заблокирован")
+        message = "✅ Пользователь заблокирован." if success else "❌ Не удалось заблокировать пользователя."
+    else:
+        await call.answer("❌ Неизвестное действие", show_alert=True)
+        return
+
+    await call.answer(message, show_alert=True)
+
+    # удалить текущее сообщение и вернуть в админ-панель:
+    try:
+        await call.message.delete()
+    except TelegramAPIError:
+        pass
 
 
 @router.callback_query(F.data == "admin_back_main_menu")
