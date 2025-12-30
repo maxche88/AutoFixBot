@@ -770,6 +770,18 @@ async def get_filter_appointments(
 
 
 @connection
+async def has_active_appointment(session, tg_id: int) -> bool:
+    """
+    Проверяет, есть ли у пользователя (по tg_id) хотя бы одна запись в таблице appointments.
+    Возвращает True, если запись существует, иначе False.
+    """
+    result = await session.execute(
+        select(Appointment.id).where(Appointment.tg_id_user == tg_id).limit(1)
+    )
+    return result.scalar() is not None
+
+
+@connection
 async def delete_appointment(session, appointment_id: int) -> bool:
     """
     Удаляет запись из таблицы appointments по её ID.
@@ -951,3 +963,150 @@ async def save_api_dtc_record(
     session.add(record)
     await session.commit()
     return True
+
+
+# ==============================
+# СТАТИСТИКА
+# ==============================
+
+# Статистика по пользователям
+@connection
+async def get_user_statistics(session) -> dict:
+    """
+    Возвращает статистику по пользователям:
+    - total: общее кол-во
+    - blocked: кол-во заблокированных (role = 'blocked')
+    - admin: кол-во админов
+    - user: кол-во клиентов
+    - master: кол-во мастеров
+    """
+    total = await session.scalar(select(func.count(User.id)))
+    blocked = await session.scalar(select(func.count(User.id)).where(User.role == "blocked"))
+    admin = await session.scalar(select(func.count(User.id)).where(User.role == "admin"))
+    user = await session.scalar(select(func.count(User.id)).where(User.role == "user"))
+    master = await session.scalar(select(func.count(User.id)).where(User.role == "master"))
+
+    return {
+        "total": total or 0,
+        "blocked": blocked or 0,
+        "admin": admin or 0,
+        "user": user or 0,
+        "master": master or 0,
+    }
+
+# Статистика по записям (Appointment)
+@connection
+async def get_appointment_statistics(session) -> dict:
+    """
+    Возвращает статистику по записям:
+    - total: за всё время
+    - year: за текущий год
+    - month: за текущий месяц
+    - today: за сегодня
+    - top_days: список из 3 кортежей (дата, кол-во записей) — самые загруженные дни
+    """
+    today = date.today()
+    year_start = date(today.year, 1, 1)
+    month_start = date(today.year, today.month, 1)
+
+    total = await session.scalar(select(func.count(Appointment.id)))
+    year = await session.scalar(
+        select(func.count(Appointment.id)).where(Appointment.appointment_date >= year_start)
+    )
+    month = await session.scalar(
+        select(func.count(Appointment.id)).where(Appointment.appointment_date >= month_start)
+    )
+    today_count = await session.scalar(
+        select(func.count(Appointment.id)).where(Appointment.appointment_date == today)
+    )
+
+    # Топ-3 самых загруженных дней
+    top_days = await session.execute(
+        select(Appointment.appointment_date, func.count(Appointment.id))
+        .group_by(Appointment.appointment_date)
+        .order_by(func.count(Appointment.id).desc())
+        .limit(3)
+    )
+    top_days_list = [(d, cnt) for d, cnt in top_days.fetchall()]
+
+    return {
+        "total": total or 0,
+        "year": year or 0,
+        "month": month or 0,
+        "today": today_count or 0,
+        "top_days": top_days_list,
+    }
+
+# Статистика по заказам (Orders)
+@connection
+async def get_order_statistics(session) -> dict:
+    """
+    Статистика по заказам:
+    - active: заказы с repair_status != 'close' и complied=False
+    - closed_total: все закрытые (repair_status == 'close')
+    - closed_year: закрытые в текущем году
+    - closed_month: закрытые в текущем месяце
+    - closed_today: закрытые сегодня
+    - avg_per_day: среднее число закрытых заказов в день (за всё время, с делением на кол-во дней)
+    """
+    today = date.today()
+    year_start = datetime(today.year, 1, 1)
+    month_start = datetime(today.year, today.month, 1)
+    today_start = datetime(today.year, today.month, today.day)
+
+    # Активные: НЕ закрытые И не выполнены (complied=False)
+    active = await session.scalar(
+        select(func.count(Orders.id)).where(
+            (Orders.repair_status != "close") | (Orders.complied == False)
+        )
+    )
+
+    # Закрытые за всё время
+    closed_total = await session.scalar(
+        select(func.count(Orders.id)).where(Orders.repair_status == "close")
+    )
+
+    # Закрытые за год
+    closed_year = await session.scalar(
+        select(func.count(Orders.id)).where(
+            (Orders.repair_status == "close") &
+            (Orders.date >= year_start)
+        )
+    )
+
+    # Закрытые за месяц
+    closed_month = await session.scalar(
+        select(func.count(Orders.id)).where(
+            (Orders.repair_status == "close") &
+            (Orders.date >= month_start)
+        )
+    )
+
+    # Закрытые за день
+    closed_today = await session.scalar(
+        select(func.count(Orders.id)).where(
+            (Orders.repair_status == "close") &
+            (Orders.date >= today_start)
+        )
+    )
+
+    # Среднее в день (если есть хотя бы 1 закрытый заказ)
+    avg_per_day = 0.0
+    if closed_total and closed_total > 0:
+        # Находим самую раннюю дату закрытого заказа
+        earliest = await session.scalar(
+            select(func.min(Orders.date)).where(Orders.repair_status == "close")
+        )
+        if earliest:
+            days_span = (datetime.utcnow().date() - earliest.date()).days or 1
+            avg_per_day = round(closed_total / days_span, 2)
+
+    return {
+        "active": active or 0,
+        "closed_total": closed_total or 0,
+        "closed_year": closed_year or 0,
+        "closed_month": closed_month or 0,
+        "closed_today": closed_today or 0,
+        "avg_per_day": avg_per_day,
+    }
+

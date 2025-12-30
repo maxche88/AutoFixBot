@@ -6,11 +6,18 @@ from database.engine import init_db
 from services.init_admin import init_admin_user
 from routers.common_handlers import router as common_router
 from routers.staff_handlers import router as staff_router
+from middlewares.block_middleware import BlockUserMiddleware
 from logger import setup_logging
 
 
 # Инициализация диспетчера и подключение роутеров
 dp = Dispatcher()
+
+# Подключаем middleware
+dp.message.middleware(BlockUserMiddleware())
+dp.callback_query.middleware(BlockUserMiddleware())
+
+# Подключаем роутеры
 dp.include_router(common_router)
 dp.include_router(staff_router)
 

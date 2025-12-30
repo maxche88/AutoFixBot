@@ -91,12 +91,8 @@ class QuickQuestionToMaster(StatesGroup):
     waiting_for_custom_text = State()
 
 
-class Test(StatesGroup):
-    in_tg_id = State()
-
-
 # ==============================
-# РЕГИСТРАЦИЯ registration
+# РЕГИСТРАЦИЯ
 # ==============================
 @router.callback_query(F.data == "registration")
 async def reg_one(call: CallbackQuery, state: FSMContext) -> None:
@@ -240,8 +236,8 @@ async def confirm_registration(call: CallbackQuery, state: FSMContext) -> None:
                               "Здесь вы найдёте всё необходимое для взаимодействия с данным сервисом: "
                               "запись, ремонт, поддержка и полезная информация.\n\n"
                               "Выберите нужный раздел ниже 👇",
-        reply_markup=kb.user_main_menu()
-    )
+                              reply_markup=kb.user_main_menu()
+                              )
 
     logger.info(f"Пользователь {user_id} успешно завершил регистрацию.")
     await add_user(new_user)
@@ -296,10 +292,6 @@ async def cmd_start(message: types.Message) -> None:
         return
 
     logger.info(f"Пользователь {user_id} ({name}) вошёл в систему с ролью: {role}")
-
-    # Если пользователь заблокирован то бот молчит
-    if role == "blocked":
-        return
 
     await message.answer_photo(photo=titul_img)
 
@@ -645,7 +637,6 @@ async def process_grade(call: CallbackQuery, state: FSMContext):
 async def start_booking(call: CallbackQuery):
     user_id = call.from_user.id
 
-
     # Проверяем, есть ли у пользователя активная запись
     appointments = await get_filter_appointments(tg_id_user=user_id)
     if appointments:
@@ -840,7 +831,6 @@ async def confirm_booking(call: CallbackQuery, state: FSMContext):
     await call.message.delete()
 
 
-# !!!!!!!!!!!!!!!!!!!!!!!!!
 # ==============================
 # ОТВЕТ ТЕКСТОМ КЛИЕНТА НА СООБЩЕНИЕ (НАПОМИНАНИЕ)
 # ==============================
@@ -1202,7 +1192,7 @@ async def show_user_data(call: CallbackQuery) -> None:
 
 
 # ==============================
-# МАСТЕР. РЕДАКТИРОВАНИЕ ПРОФИЛЯ
+# КЛИЕНТ. РЕДАКТИРОВАНИЕ ПРОФИЛЯ
 # ==============================
 @router.callback_query(F.data == "edit_menu")
 async def edit_menu(call: CallbackQuery, state: FSMContext) -> None:

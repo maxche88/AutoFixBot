@@ -6,7 +6,8 @@ from database.requests import (get_user_dict, get_available_hours, create_appoin
                                get_orders_by_user, update_order, delete_order, get_all_masters, get_filter_appointments,
                                get_appointment, get_appointment_by_users, delete_appointment, save_api_dtc_record,
                                update_user, save_manual_diagnostic_record, get_diagnostics_by_filter, delete_user,
-                               get_api_dtc_history, get_user_dict_by_id, update_user_by_id)
+                               get_api_dtc_history, get_user_dict_by_id, update_user_by_id, has_active_appointment,
+                               get_user_statistics, get_appointment_statistics, get_order_statistics)
 from utils.profile_render import render_master_profile
 from bot import bot
 import asyncio
@@ -501,20 +502,34 @@ async def handle_admin_user_action(call: CallbackQuery):
         return
 
     success = False
-    if action == "promote":
+
+    if action == "appoint_employ":
         # Назначаем мастером
         success = await update_user_by_id(
             uid,
             role="master",
-            status="Рабочий",
+            status="Новый рабочий",
             brand_auto="-",
             can_messages=True
         )
         message = "✅ Пользователь назначен мастером!" if success else "❌ Не удалось назначить мастера."
+
+    elif action == "unlock":
+        # Разблокируем
+        success = await update_user_by_id(
+            uid,
+            role="user"
+        )
+        message = "✅ Пользователь разблокирован." if success else "❌ Не удалось разблокировать пользователя."
+
     elif action == "block":
         # Блокируем
-        success = await update_user_by_id(uid, role="blocked", status="Заблокирован")
+        success = await update_user_by_id(
+            uid,
+            role="blocked"
+        )
         message = "✅ Пользователь заблокирован." if success else "❌ Не удалось заблокировать пользователя."
+
     else:
         await call.answer("❌ Неизвестное действие", show_alert=True)
         return
@@ -526,6 +541,76 @@ async def handle_admin_user_action(call: CallbackQuery):
         await call.message.delete()
     except TelegramAPIError:
         pass
+
+
+# СТАТИСТИКА
+@router.callback_query(F.data == "admin_stats")
+async def handle_admin_stats(call: CallbackQuery):
+    await call.message.edit_text(
+        "📊 <b>ВЫБЕРИТЕ РАЗДЕЛ СТАТИСТИКИ</b>\n\n"
+        "Здесь вы можете получить оперативную сводку по пользователям, записям и заказам в системе.",
+        reply_markup=kb.admin_stats_menu(),
+        parse_mode="HTML"
+    )
+    await call.answer()
+
+
+# Обработчик: конкретный тип статистики
+@router.callback_query(F.data.startswith("stat:"))
+async def handle_stat_detail(call: CallbackQuery):
+    stat_type = call.data.split(":", 1)[1]
+    text = "📊 <b>СТАТИСТИКА</b>\n\n"
+
+    if stat_type == "users":
+        stats = await get_user_statistics()
+        text += (
+            f"👥 <b>ПОЛЬЗОВАТЕЛИ</b>\n"
+            f"Всего: {stats['total']}\n"
+            f"Активных: {stats['total'] - stats['blocked']}\n"
+            f"Заблокировано: {stats['blocked']}\n\n"
+            f"Роли:\n"
+            f" • Админы: {stats['admin']}\n"
+            f" • Клиенты: {stats['user']}\n"
+            f" • Мастера: {stats['master']}"
+        )
+
+    elif stat_type == "appointments":
+        stats = await get_appointment_statistics()
+        text += (
+            f"🗓️ <b>ЗАПИСИ</b>\n"
+            f"Всего: {stats['total']}\n"
+            f"За год: {stats['year']}\n"
+            f"За месяц: {stats['month']}\n"
+            f"Сегодня: {stats['today']}\n\n"
+            f"Топ-3 загруженных дня:\n"
+        )
+        if stats["top_days"]:
+            for i, (d, cnt) in enumerate(stats["top_days"], 1):
+                text += f" {i}. {d.strftime('%d.%m.%Y')} — {cnt} записей\n"
+        else:
+            text += " Нет данных\n"
+
+    elif stat_type == "orders":
+        stats = await get_order_statistics()
+        text += (
+            f"🛠️ <b>ЗАКАЗЫ</b>\n"
+            f"Активных: {stats['active']}\n"
+            f"Закрыто всего: {stats['closed_total']}\n"
+            f"За год: {stats['closed_year']}\n"
+            f"За месяц: {stats['closed_month']}\n"
+            f"Сегодня: {stats['closed_today']}\n"
+            f"Среднее в день: {stats['avg_per_day']}"
+        )
+
+    else:
+        text = "❌ Неизвестный тип статистики"
+
+    await call.message.edit_text(
+        text,
+        reply_markup=kb.admin_stats_menu(),
+        parse_mode="HTML"
+    )
+    await call.answer()
 
 
 @router.callback_query(F.data == "admin_back_main_menu")
@@ -1538,6 +1623,10 @@ async def handle_set_time_action(call: CallbackQuery, state: FSMContext):
         user_id = int(parts[1])
     except ValueError:
         await call.answer("Некорректный ID", show_alert=True)
+        return
+
+    if await has_active_appointment(user_id):
+        await call.answer("❌ Клиент уже записан на приём.", show_alert=True)
         return
 
     user_data = await get_user_dict(tg_id=user_id, fields=["user_name"])

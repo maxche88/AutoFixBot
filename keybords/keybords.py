@@ -193,11 +193,21 @@ def admin_menu():
 
 def admin_user_manage(uid: int) -> InlineKeyboardMarkup:
     kb_list_1 = [
-        [InlineKeyboardButton(text="🔹 НАЗНАЧИТЬ МАСТЕРОМ", callback_data=f"admin_user_action:promote:{uid}")],
-        [InlineKeyboardButton(text="🔹 ЗАБЛОКИРОВАТЬ", callback_data=f"admin_user_action:block:{uid}")],
-        [InlineKeyboardButton(text="🔺 Назад", callback_data="admin_panel")]
+        [InlineKeyboardButton(text="🔹 НАЗНАЧИТЬ МАСТЕРОМ 🔹", callback_data=f"admin_user_action:appoint_employ:{uid}")],
+        [InlineKeyboardButton(text="🔹 РАЗБЛОКИРОВАТЬ 🔹", callback_data=f"admin_user_action:unlock:{uid}")],
+        [InlineKeyboardButton(text="🔹 ЗАБЛОКИРОВАТЬ 🔹", callback_data=f"admin_user_action:block:{uid}")],
+        [InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="admin_panel")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb_list_1)
+
+
+def admin_stats_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔹 Пользователи", callback_data="stat:users")],
+        [InlineKeyboardButton(text="🔹 Записи", callback_data="stat:appointments")],
+        [InlineKeyboardButton(text="🔹 Заказы", callback_data="stat:orders")],
+        [InlineKeyboardButton(text="🔺 Назад", callback_data="admin_panel")]
+    ])
 
 
 def admin_action_menu(index: list, order_id: int = None, tg_id: int = None) -> InlineKeyboardMarkup:
@@ -302,7 +312,7 @@ def appointment_action_menu(appointment_id: int, user_tg_id: int) -> InlineKeybo
     kb_list_4 = [
         [InlineKeyboardButton(text="✉️ НАПИСАТЬ КЛИЕНТУ", callback_data=f"send_mess:{user_tg_id}")],
         [InlineKeyboardButton(text="🔔 НАПОМНИТЬ О ВСТРЕЧЕ", callback_data=f"remind_mess:{appointment_id}:{user_tg_id}")],
-        [InlineKeyboardButton(text="♻️ ПЕРЕНЕСТИ ВСТРЕЧУ", callback_data=f"transfer__app:{user_tg_id}")],
+        [InlineKeyboardButton(text="♻️ ПЕРЕНЕСТИ ВСТРЕЧУ", callback_data=f"transfer_app:{user_tg_id}")],
         [InlineKeyboardButton(text="🗑 УДАЛИТЬ ЗАПИСЬ", callback_data=f"del_app:{appointment_id}")],
         [InlineKeyboardButton(text="🔺 Назад 🔺", callback_data=f"cancel")]
     ]
@@ -391,7 +401,7 @@ def staff_menu(index: list):
     return InlineKeyboardMarkup(inline_keyboard=inline_buttons)
 
 
-# МАСТЕР (ГЕНЕРАТОР КНОПОК)
+# МАСТЕР. USER_ID (ГЕНЕРАТОР КНОПОК)
 def master_menu_app(index: list, user_id: int):
     buttons_dict = {
         1: InlineKeyboardButton(text="🔹 ОЖИДАНИЕ 🔹", callback_data=f'await:{user_id}'),
