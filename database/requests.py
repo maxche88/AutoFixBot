@@ -318,10 +318,9 @@ async def delete_user(session, tg_id: int) -> bool:
 @connection
 async def get_all_active_user_ids(session) -> list[int]:
     """
-    Возвращает список tg_id всех пользователей, которым разрешено получать сообщения
-    (can_messages = True).
+    Возвращает список tg_id всех пользователей с ролью 'user'.
     """
-    stmt = select(User.tg_id).where(User.can_messages.is_(True))
+    stmt = select(User.tg_id).where(User.role == "user")
     result = await session.execute(stmt)
     tg_ids = result.scalars().all()
     return [int(tg_id) for tg_id in tg_ids if tg_id is not None]
