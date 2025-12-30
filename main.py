@@ -4,8 +4,8 @@ from aiogram import Dispatcher
 from bot import bot
 from database.engine import init_db
 from services.init_admin import init_admin_user
-from routers.common_handlers import router as common_router
-from routers.staff_handlers import router as staff_router
+from handlers.common_handlers import router as common_router
+from handlers.staff_handlers import router as staff_router
 from middlewares.block_middleware import BlockUserMiddleware
 from logger import setup_logging
 

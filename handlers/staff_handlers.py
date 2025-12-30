@@ -7,7 +7,8 @@ from database.requests import (get_user_dict, get_available_hours, create_appoin
                                get_appointment, get_appointment_by_users, delete_appointment, save_api_dtc_record,
                                update_user, save_manual_diagnostic_record, get_diagnostics_by_filter, delete_user,
                                get_api_dtc_history, get_user_dict_by_id, update_user_by_id, has_active_appointment,
-                               get_user_statistics, get_appointment_statistics, get_order_statistics)
+                               get_user_statistics, get_appointment_statistics, get_order_statistics,
+                               get_all_active_user_ids)
 from utils.profile_render import render_master_profile
 from bot import bot
 import asyncio
@@ -400,6 +401,7 @@ async def handle_manage_users(call: CallbackQuery, state: FSMContext):
     prompt_msg = await call.message.answer(
         "📁 <b>УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ</b>\n\n"
         "📝 Введите <b>UID</b> пользователя (целое число из его профиля):",
+        reply_markup=kb.admin_action_menu([4]),
         parse_mode="HTML"
     )
     await state.update_data(prompt_message_id=prompt_msg.message_id)
@@ -543,13 +545,15 @@ async def handle_admin_user_action(call: CallbackQuery):
         pass
 
 
+# ==============================
 # СТАТИСТИКА
+# ==============================
 @router.callback_query(F.data == "admin_stats")
 async def handle_admin_stats(call: CallbackQuery):
     await call.message.edit_text(
         "📊 <b>ВЫБЕРИТЕ РАЗДЕЛ СТАТИСТИКИ</b>\n\n"
         "Здесь вы можете получить оперативную сводку по пользователям, записям и заказам в системе.",
-        reply_markup=kb.admin_stats_menu(),
+        reply_markup=kb.admin_action_menu([14, 15, 16, 3]),
         parse_mode="HTML"
     )
     await call.answer()
@@ -559,7 +563,9 @@ async def handle_admin_stats(call: CallbackQuery):
 @router.callback_query(F.data.startswith("stat:"))
 async def handle_stat_detail(call: CallbackQuery):
     stat_type = call.data.split(":", 1)[1]
-    text = "📊 <b>СТАТИСТИКА</b>\n\n"
+    text = (f"📊 <b>СТАТИСТИКА</b>\n"
+            f"Подробная аналитика по пользователям, записям и заказам: общие показатели, распределение по ролям, "
+            f"динамика за день/месяц/год, топ загруженных дней и средняя производительность сервиса.\n\n")
 
     if stat_type == "users":
         stats = await get_user_statistics()
@@ -607,10 +613,103 @@ async def handle_stat_detail(call: CallbackQuery):
 
     await call.message.edit_text(
         text,
-        reply_markup=kb.admin_stats_menu(),
+        reply_markup=kb.admin_action_menu([14, 15, 16, 3]),
         parse_mode="HTML"
     )
     await call.answer()
+
+
+# ==============================
+# АДМИН. РАССЫЛКА
+# ==============================
+class BroadcastState(StatesGroup):
+    waiting_content = State()
+
+
+@router.callback_query(F.data == "broadcast")
+async def start_broadcast(call: CallbackQuery, state: FSMContext):
+    await call.message.edit_text(
+        "📢 <b>РАССЫЛКА</b>\n\n"
+        "Пожалуйста, отправьте сообщение, которое хотите разослать всем пользователям.\n"
+        "Поддерживаются: текст, фото, видео, документы (с подписью или без).\n\n"
+        "⚠️ Внимание: после подтверждения отмена невозможна.",
+        reply_markup=kb.admin_action_menu([3])
+    )
+    await state.set_state(BroadcastState.waiting_content)
+    await call.answer()
+
+
+# Приём контента
+@router.message(BroadcastState.waiting_content)
+async def receive_broadcast_content(message: Message, state: FSMContext):
+    # Сохраняем тип и данные сообщения
+    content = {
+        "type": message.content_type,
+        "text": message.text or message.caption,
+        "media_file_id": None
+    }
+
+    if message.content_type == "photo":
+        content["media_file_id"] = message.photo[-1].file_id
+    elif message.content_type in ("video", "document"):
+        content["media_file_id"] = getattr(message, message.content_type).file_id
+
+    await state.update_data(broadcast_content=content)
+
+    # Формируем предпросмотр
+    preview_text = content["text"] or "Без текста"
+    await message.answer(
+        f"👀 <b>ПРЕДПРОСМОТР РАССЫЛКИ</b>\n\n{preview_text}",
+        reply_markup=kb.admin_action_menu([17, 4]),
+        parse_mode="HTML"
+    )
+    # Если есть медиа — отправляем его отдельно
+    if content["media_file_id"]:
+        if message.content_type == "photo":
+            await message.answer_photo(content["media_file_id"], caption=preview_text)
+        elif message.content_type == "video":
+            await message.answer_video(content["media_file_id"], caption=preview_text)
+        elif message.content_type == "document":
+            await message.answer_document(content["media_file_id"], caption=preview_text)
+
+
+# Подтверждение
+@router.callback_query(F.data == "broadcast_confirm")
+async def confirm_broadcast(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    content = data.get("broadcast_content")
+    if not content:
+        await call.answer("❌ Нет данных для рассылки", show_alert=True)
+        return
+
+    # Получаем всех активных пользователей
+    user_ids = await get_all_active_user_ids()
+
+    await call.message.edit_text("📤 Рассылка запущена... Это может занять время.")
+
+    success, failed = 0, 0
+    for user_id in user_ids:
+        try:
+            if content["type"] == "text":
+                await call.bot.send_message(user_id, content["text"], parse_mode="HTML")
+            elif content["type"] == "photo":
+                await call.bot.send_photo(user_id, content["media_file_id"], caption=content["text"])
+            elif content["type"] == "video":
+                await call.bot.send_video(user_id, content["media_file_id"], caption=content["text"])
+            elif content["type"] == "document":
+                await call.bot.send_document(user_id, content["media_file_id"], caption=content["text"])
+            success += 1
+        except Exception as e:
+            failed += 1
+            # Логируй ошибку
+            logging.warning(f"Failed to send to {user_id}: {e}")
+
+    await call.message.answer(
+        f"✅ Рассылка завершена!\n"
+        f"Успешно: {success}\n"
+        f"Ошибок: {failed}"
+    )
+    await state.clear()
 
 
 @router.callback_query(F.data == "admin_back_main_menu")
@@ -2437,3 +2536,5 @@ async def show_api_history(call: CallbackQuery):
         await call.message.answer(response_text, parse_mode="HTML", reply_markup=kb.staff_menu([4]))
 
     await call.answer()
+
+

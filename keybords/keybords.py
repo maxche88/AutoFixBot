@@ -201,15 +201,6 @@ def admin_user_manage(uid: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=kb_list_1)
 
 
-def admin_stats_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔹 Пользователи", callback_data="stat:users")],
-        [InlineKeyboardButton(text="🔹 Записи", callback_data="stat:appointments")],
-        [InlineKeyboardButton(text="🔹 Заказы", callback_data="stat:orders")],
-        [InlineKeyboardButton(text="🔺 Назад", callback_data="admin_panel")]
-    ])
-
-
 def admin_action_menu(index: list, order_id: int = None, tg_id: int = None) -> InlineKeyboardMarkup:
     buttons_dict = {
         1: InlineKeyboardButton(text="🔹 УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ 🔹", callback_data="manage_users"),
@@ -227,6 +218,12 @@ def admin_action_menu(index: list, order_id: int = None, tg_id: int = None) -> I
         11: InlineKeyboardButton(text="🔺 Назад 🔺", callback_data="manage_masters"),
         # ПОДТВЕРЖДЕНИЕ УДАЛЕНИЯ МАСТЕРА
         12: InlineKeyboardButton(text="❌ Да, удалить", callback_data=f"confirm_delete_master:{tg_id}"),
+        # СТАТИСТИКА
+        14: InlineKeyboardButton(text="🔹 Пользователи 🔹", callback_data="stat:users"),
+        15: InlineKeyboardButton(text="🔹 Записи 🔹", callback_data="stat:appointments"),
+        16: InlineKeyboardButton(text="🔹 Заказы 🔹", callback_data="stat:orders"),
+        # РАССЫЛКА
+        17: InlineKeyboardButton(text="✅ Отправить всем", callback_data="broadcast_confirm"),
     }
 
     inline_buttons = [[buttons_dict[idx]] for idx in index if idx in buttons_dict]
