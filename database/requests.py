@@ -1048,6 +1048,7 @@ async def get_appointment_statistics(session) -> dict:
         "top_days": top_days_list,
     }
 
+
 # Статистика по заказам (Orders)
 @connection
 async def get_order_statistics(session) -> dict:
@@ -1121,3 +1122,123 @@ async def get_order_statistics(session) -> dict:
         "avg_per_day": avg_per_day,
     }
 
+
+# Топ-10 клиентов с закрытыми заказами
+@connection
+async def get_top_clients_statistics(session) -> dict:
+    """
+    Возвращает статистику по топ-10 клиентам с наибольшим количеством закрытых заказов.
+
+    Для каждого клиента включает:
+        - user_name: имя клиента
+        - rating: рейтинг (по умолчанию 0, если None)
+        - brand_auto, model_auto, year_auto: данные об автомобиле
+        - closed_orders: количество закрытых заказов
+
+    Возвращаемый формат:
+        {
+            "clients": [
+                {
+                    "user_name": str,
+                    "rating": int,
+                    "brand_auto": str,
+                    "model_auto": str,
+                    "year_auto": str,
+                    "closed_orders": int
+                },
+                ...
+            ]
+        }
+    """
+    stmt = (
+        select(
+            User.user_name,
+            User.rating,
+            User.brand_auto,
+            User.model_auto,
+            User.year_auto,
+            func.count(Orders.id).label("closed_count")
+        )
+        .select_from(User)
+        .join(Orders, User.tg_id == Orders.tg_id_user)
+        .where(Orders.repair_status == "close")
+        .group_by(
+            User.tg_id,
+            User.user_name,
+            User.rating,
+            User.brand_auto,
+            User.model_auto,
+            User.year_auto
+        )
+        .order_by(func.count(Orders.id).desc())
+        .limit(10)
+    )
+    result = await session.execute(stmt)
+    rows = result.fetchall()
+
+    clients = []
+    for row in rows:
+        clients.append({
+            "user_name": row.user_name,
+            "rating": row.rating or 0,
+            "brand_auto": row.brand_auto or "-",
+            "model_auto": row.model_auto or "-",
+            "year_auto": row.year_auto or "-",
+            "closed_orders": row.closed_count
+        })
+
+    return {"clients": clients}
+
+
+# Список мастеров по количеству закрытых заказов
+@connection
+async def get_top_masters_statistics(session) -> dict:
+    """
+    Возвращает список всех мастеров, отсортированных по убыванию количества закрытых заказов.
+
+    Для каждого мастера включает:
+        - user_name: имя мастера
+        - rating: рейтинг (по умолчанию 0, если None)
+        - closed_orders: количество закрытых заказов
+
+    Возвращаемый формат:
+        {
+            "masters": [
+                {
+                    "user_name": str,
+                    "rating": int,
+                    "closed_orders": int
+                },
+                ...
+            ]
+        }
+    """
+    stmt = (
+        select(
+            User.user_name,
+            User.rating,
+            func.count(Orders.id).label("closed_count")
+        )
+        .select_from(User)
+        .join(Orders, User.tg_id == Orders.tg_id_master)
+        .where(
+            and_(
+                User.role == "master",
+                Orders.repair_status == "close"
+            )
+        )
+        .group_by(User.tg_id, User.user_name, User.rating)
+        .order_by(func.count(Orders.id).desc())
+    )
+    result = await session.execute(stmt)
+    rows = result.fetchall()
+
+    masters = []
+    for row in rows:
+        masters.append({
+            "user_name": row.user_name,
+            "rating": row.rating or 0,
+            "closed_orders": row.closed_count
+        })
+
+    return {"masters": masters}

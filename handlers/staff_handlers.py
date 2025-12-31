@@ -8,7 +8,7 @@ from database.requests import (get_user_dict, get_available_hours, create_appoin
                                update_user, save_manual_diagnostic_record, get_diagnostics_by_filter, delete_user,
                                get_api_dtc_history, get_user_dict_by_id, update_user_by_id, has_active_appointment,
                                get_user_statistics, get_appointment_statistics, get_order_statistics,
-                               get_all_active_user_ids)
+                               get_all_active_user_ids, get_top_clients_statistics, get_top_masters_statistics)
 from utils.profile_render import render_master_profile
 from bot import bot
 import asyncio
@@ -553,7 +553,7 @@ async def handle_admin_stats(call: CallbackQuery):
     await call.message.edit_text(
         "📊 <b>ВЫБЕРИТЕ РАЗДЕЛ СТАТИСТИКИ</b>\n\n"
         "Здесь вы можете получить оперативную сводку по пользователям, записям и заказам в системе.",
-        reply_markup=kb.admin_action_menu([14, 15, 16, 3]),
+        reply_markup=kb.admin_action_menu([14, 15, 16, 18, 19, 3]),
         parse_mode="HTML"
     )
     await call.answer()
@@ -608,12 +608,36 @@ async def handle_stat_detail(call: CallbackQuery):
             f"Среднее в день: {stats['avg_per_day']}"
         )
 
+    elif stat_type == "clients":
+        stats = await get_top_clients_statistics()
+        clients = stats["clients"]
+        if not clients:
+            text += "📭 Нет клиентов с закрытыми заказами."
+        else:
+            text += "🏆 <b>ТОП-10 КЛИЕНТОВ</b> (по закрытым заказам):\n"
+            for i, c in enumerate(clients, 1):
+                text += (
+                    f"\n{i}. {c['user_name']} ⭐{c['rating']}\n"
+                    f"   🚗 {c['brand_auto']} {c['model_auto']} ({c['year_auto']})\n"
+                    f"   📦 Закрыто заказов: {c['closed_orders']}"
+                )
+
+    elif stat_type == "masters":
+        stats = await get_top_masters_statistics()
+        masters = stats["masters"]
+        if not masters:
+            text += "📭 Нет мастеров с закрытыми заказами."
+        else:
+            text += "👨‍🔧 <b>МАСТЕРА</b> (по убыванию закрытых заказов):\n"
+            for i, m in enumerate(masters, 1):
+                text += f"\n{i}. {m['user_name']} ⭐{m['rating']} — {m['closed_orders']} заказов"
+
     else:
         text = "❌ Неизвестный тип статистики"
 
     await call.message.edit_text(
         text,
-        reply_markup=kb.admin_action_menu([14, 15, 16, 3]),
+        reply_markup=kb.admin_action_menu([14, 15, 16, 18, 19, 3]),
         parse_mode="HTML"
     )
     await call.answer()
@@ -631,7 +655,7 @@ async def start_broadcast(call: CallbackQuery, state: FSMContext):
     await call.message.edit_text(
         "📢 <b>РАССЫЛКА</b>\n\n"
         "Пожалуйста, отправьте сообщение, которое хотите разослать всем пользователям.\n"
-        "Поддерживаются: текст, фото, видео, документы (с подписью или без).\n\n"
+        "Поддерживаются: текст, фото, видео, документы.\n\n"
         "⚠️ Внимание: после подтверждения отмена невозможна.",
         reply_markup=kb.admin_action_menu([3])
     )
@@ -664,13 +688,23 @@ async def receive_broadcast_content(message: Message, state: FSMContext):
         parse_mode="HTML"
     )
     # Если есть медиа — отправляем его отдельно
+
+    media_msg = None
+
     if content["media_file_id"]:
         if message.content_type == "photo":
-            await message.answer_photo(content["media_file_id"], caption=preview_text)
+            media_msg = await message.answer_photo(content["media_file_id"], caption=preview_text)
         elif message.content_type == "video":
-            await message.answer_video(content["media_file_id"], caption=preview_text)
+            media_msg = await message.answer_video(content["media_file_id"], caption=preview_text)
         elif message.content_type == "document":
-            await message.answer_document(content["media_file_id"], caption=preview_text)
+            media_msg = await message.answer_document(content["media_file_id"], caption=preview_text)
+
+    # Сохраняем ID сообщений для последующего удаления
+    message_ids = [message.message_id]
+    if media_msg:
+        message_ids.append(media_msg.message_id)
+
+    await state.update_data(broadcast_message_ids=message_ids)
 
 
 # Подтверждение
@@ -682,10 +716,16 @@ async def confirm_broadcast(call: CallbackQuery, state: FSMContext):
         await call.answer("❌ Нет данных для рассылки", show_alert=True)
         return
 
+    # Получаем ID сообщений для удаления (предпросмотр и исходное сообщение)
+    mess_ids = data.get("broadcast_message_ids", [])
+
     # Получаем всех активных пользователей
     user_ids = await get_all_active_user_ids()
 
-    await call.message.edit_text("📤 Рассылка запущена... Это может занять время.")
+    status_msg = await call.message.edit_text("📤 Рассылка запущена... Это может занять время.")
+
+    # Добавляем в общий список с id сообщений для удаления
+    mess_ids.append(status_msg.message_id)
 
     success, failed = 0, 0
     for user_id in user_ids:
@@ -704,11 +744,17 @@ async def confirm_broadcast(call: CallbackQuery, state: FSMContext):
             # Логируй ошибку
             logging.warning(f"Failed to send to {user_id}: {e}")
 
-    await call.message.answer(
+    await call.answer(
         f"✅ Рассылка завершена!\n"
         f"Успешно: {success}\n"
-        f"Ошибок: {failed}"
+        f"Ошибок: {failed}",
+        show_alert=True
     )
+
+    # Удаляем все ненужные сообщения
+    if mess_ids:
+        _ = asyncio.create_task(message_deleter(bot=bot, chat_id=call.message.chat.id, message_ids=mess_ids))
+
     await state.clear()
 
 

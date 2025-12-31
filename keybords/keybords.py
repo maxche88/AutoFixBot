@@ -222,6 +222,8 @@ def admin_action_menu(index: list, order_id: int = None, tg_id: int = None) -> I
         14: InlineKeyboardButton(text="🔹 Пользователи 🔹", callback_data="stat:users"),
         15: InlineKeyboardButton(text="🔹 Записи 🔹", callback_data="stat:appointments"),
         16: InlineKeyboardButton(text="🔹 Заказы 🔹", callback_data="stat:orders"),
+        18: InlineKeyboardButton(text="🔹 Клиенты 🔹", callback_data="stat:clients"),
+        19: InlineKeyboardButton(text="🔹 Мастера 🔹", callback_data="stat:masters"),
         # РАССЫЛКА
         17: InlineKeyboardButton(text="✅ Отправить всем", callback_data="broadcast_confirm"),
     }
