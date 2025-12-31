@@ -20,15 +20,13 @@ class LoggingConfig:
 
 class CarApiConfig:
     RAPID_API_KEY = os.getenv("RAPID_API_KEY", "")
-    USE_MOCK_API = False  # можно сделать через .env, если нужно
+    USE_MOCK_API = False
     BASE_URL = "https://car-code.p.rapidapi.com/obd2/".strip()
 
-    @classmethod
-    def headers(cls):
-        return {
-            "x-rapidapi-host": "car-code.p.rapidapi.com",
-            "x-rapidapi-key": cls.RAPID_API_KEY,
-        }
+    headers = {
+        "x-rapidapi-host": "car-code.p.rapidapi.com",
+        "x-rapidapi-key": RAPID_API_KEY,
+    }
 
 
 class Config:
